@@ -106,73 +106,68 @@ class HammyCrew:
         Returns:
             Markdown-formatted context pack.
         """
-        # Create tasks
+        # Task 1: Explorer analyzes code structure
         explore_task = Task(
             description=(
-                f"Analyze the codebase structure to answer: '{question}'\n\n"
-                "Use your tools to find relevant code entities, dependencies, "
-                "and cross-language bridges. Focus on the specific files and "
-                "symbols that are relevant to the query."
+                f"Find code entities related to: '{question}'\n\n"
+                "Use AST Query to find relevant files, classes, and methods. "
+                "List what you find with file paths and line numbers. "
+                "Keep it factual - just report what exists in the code."
             ),
             expected_output=(
-                "A detailed report of relevant code entities found, their "
-                "locations, dependencies, and any cross-language connections."
+                "A list of relevant code entities with their locations and basic descriptions."
             ),
             agent=self.explorer,
         )
 
-        history_task = Task(
-            description=(
-                f"Research the version control history relevant to: '{question}'\n\n"
-                "Use your tools to find relevant commits, blame information, "
-                "and churn patterns. Focus on the historical context that "
-                "helps explain why the code is the way it is."
-            ),
-            expected_output=(
-                "A report on relevant commit history, code ownership, "
-                "change frequency, and any notable patterns."
-            ),
-            agent=self.historian,
-        )
+        # Task 2: Historian analyzes VCS history (only if VCS tools are available)
+        tasks = [explore_task]
+        agents = [self.explorer]
+        
+        if self.historian.tools:  # Only add historian if VCS tools are available
+            history_task = Task(
+                description=(
+                    f"Research VCS history related to: '{question}'\n\n"
+                    "Based on the Explorer's findings, use Git Log and File Churn tools "
+                    "to check the commit history. Report who changed these files, when, "
+                    "and how often they change. Keep it brief."
+                ),
+                expected_output=(
+                    "A summary of relevant commits, authors, and change frequency."
+                ),
+                agent=self.historian,
+            )
+            tasks.append(history_task)
+            agents.append(self.historian)
 
-        synthesize_task = Task(
-            description=(
-                f"Synthesize the findings from the Explorer and Historian to "
-                f"answer: '{question}'\n\n"
-                "Combine structural analysis with historical context to provide "
-                "a complete picture. Highlight any warnings (high churn, legacy "
-                "code, security concerns) and provide actionable insights."
-            ),
-            expected_output=(
-                "A comprehensive analysis combining code structure and history, "
-                "with clear findings, warnings, and recommendations."
-            ),
-            agent=self.dispatcher,
-            context=[explore_task, history_task],
-        )
+            # Task 3: Dispatcher synthesizes findings
+            synthesize_task = Task(
+                description=(
+                    f"Answer: '{question}'\n\n"
+                    "Combine the Explorer's code structure findings with the Historian's "
+                    "change history. Provide a complete answer with both what the code does "
+                    "and its evolution over time. Highlight any concerns like high churn."
+                ),
+                expected_output=(
+                    "A comprehensive answer combining code structure and history."
+                ),
+                agent=self.dispatcher,
+                context=[explore_task, history_task],
+            )
+            tasks.append(synthesize_task)
+            agents.append(self.dispatcher)
 
         # Create and run crew
         crew = Crew(
-            agents=[self.explorer, self.historian, self.dispatcher],
-            tasks=[explore_task, history_task, synthesize_task],
+            agents=agents,
+            tasks=tasks,
             process=Process.sequential,
-            verbose=False,
+            verbose=True,
         )
 
         result = crew.kickoff()
 
-        # Also resolve bridges
-        bridges = resolve_bridges(self.nodes, self.edges)
-
-        # Build context pack
-        pack = ContextPack(
-            query=question,
-            nodes=self.nodes,
-            edges=self.edges + bridges,
-            summary=str(result),
-        )
-
-        return generate_context_pack_markdown(pack)
+        return str(result)
 
     def _load_agents_config(self) -> dict[str, Any]:
         """Load agent configuration from agents.yaml."""

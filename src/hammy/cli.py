@@ -191,13 +191,26 @@ def query(
     except Exception:
         pass
 
-    # Create crew and run query
-    crew = HammyCrew(config, nodes, edges, qdrant=qdrant)
-
-    with console.status("[bold blue]Analyzing..."):
-        result = crew.query(question)
-
-    console.print(result)
+    # Create crew with full context (no filtering)
+    try:
+        crew = HammyCrew(config, nodes, edges, qdrant=qdrant)
+        
+        with console.status("[bold blue]Analyzing..."):
+            result = crew.query(question)
+        
+        console.print(result)
+    except Exception as e:
+        console.print(f"[red]Crew analysis failed:[/red] {e}\n")
+        console.print("[yellow]Falling back to simple search...[/yellow]\n")
+        
+        # Simple fallback: just list relevant entities
+        console.print("[bold]Relevant code entities found:[/bold]\n")
+        for node in filtered_nodes[:20]:
+            console.print(f"  • {node.type}: [cyan]{node.name}[/cyan]")
+            console.print(f"    Location: {node.loc.file}:{node.loc.lines[0]}-{node.loc.lines[1]}")
+            if node.summary:
+                console.print(f"    {node.summary}")
+            console.print()
 
 
 @app.command()

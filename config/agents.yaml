@@ -14,7 +14,7 @@ dispatcher:
     You are an expert at understanding what developers need to know about a codebase.
     You break complex questions into specific, actionable research tasks.
   llm: anthropic/claude-sonnet-4-20250514  # REQUIRED: set to your provider/model
-  max_iter: 10
+  max_iter: 20
   allow_delegation: true
   verbose: true
 
@@ -26,8 +26,9 @@ historian:
     You are an expert at reading version control history and extracting meaningful
     patterns from commit logs, blame data, and change frequency.
   llm: anthropic/claude-sonnet-4-20250514  # REQUIRED: set to your provider/model
-  max_iter: 5
+  max_iter: 20
   allow_delegation: false
+  verbose: true
 
 explorer:
   role: "Codebase Explorer"
@@ -37,5 +38,6 @@ explorer:
     You are an expert at reading ASTs, understanding code structure, and finding
     connections between components across languages.
   llm: anthropic/claude-sonnet-4-20250514  # REQUIRED: set to your provider/model
-  max_iter: 5
+  max_iter: 15
   allow_delegation: false
+  verbose: true
