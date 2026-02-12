@@ -1,0 +1,26 @@
+# Hammy configuration
+project:
+  name: "my-project"
+  root: "."
+
+ignore:
+  use_gitignore: true
+  use_hgignore: true
+  use_hammyignore: true
+  extra_patterns: []
+
+parsing:
+  languages:
+    - php
+    - javascript
+  max_file_size_kb: 500
+
+qdrant:
+  host: "localhost"
+  port: 6333
+  collection_prefix: "hammy"
+  embedding_model: "all-MiniLM-L6-v2"
+
+vcs:
+  max_commits: 5000
+  churn_window_days: 90

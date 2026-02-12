@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+.env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# uv
+uv.lock
+
+# Qdrant data
+qdrant_data/
+
+.claude/
+
+IMPLEMENTATION_PLAN.md
+PROGRESS.md
+PROJECT_PLAN.md
+test.md

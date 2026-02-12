@@ -1,0 +1,26 @@
+# CrewAI task templates
+# These can be customized per query type
+
+explore:
+  description: >
+    Analyze the codebase structure to find relevant code entities,
+    dependencies, and cross-language bridges related to the query.
+  expected_output: >
+    A detailed report of relevant code entities, their locations,
+    dependencies, and any cross-language connections.
+
+research_history:
+  description: >
+    Research the version control history to find relevant commits,
+    blame information, and change frequency patterns.
+  expected_output: >
+    A report on relevant commit history, code ownership,
+    change frequency, and notable patterns.
+
+synthesize:
+  description: >
+    Combine structural and historical analysis into a comprehensive
+    report with findings, warnings, and recommendations.
+  expected_output: >
+    A comprehensive analysis with clear findings, warnings about
+    high-churn areas or legacy code, and actionable recommendations.

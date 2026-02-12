@@ -1,0 +1,17 @@
+# Hammy custom ignore patterns
+# Uses .gitignore syntax
+# These are IN ADDITION to .gitignore/.hgignore and built-in defaults
+
+# Large generated files
+*.min.js
+*.min.css
+*.map
+
+# Build artifacts
+dist/
+build/
+out/
+
+# IDE-specific
+.idea/
+.vscode/
