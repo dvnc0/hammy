@@ -261,5 +261,38 @@ def status(
         console.print("[yellow]No VCS detected[/yellow]")
 
 
+@app.command()
+def serve(
+    path: Path = typer.Argument(
+        Path("."),
+        help="Project root directory.",
+    ),
+    transport: str = typer.Option(
+        "stdio",
+        "--transport", "-t",
+        help="Transport mode: 'stdio' (default) or 'sse'.",
+    ),
+) -> None:
+    """Start the Hammy MCP server for AI tool integration."""
+    from hammy.config import HammyConfig
+    from hammy.mcp.server import create_mcp_server
+
+    path = path.resolve()
+    config = HammyConfig.load(path)
+
+    console.print(f"[bold blue]Starting Hammy MCP server[/bold blue]")
+    console.print(f"  Project: {config.project.name}")
+    console.print(f"  Root: {config.project.root}")
+    console.print(f"  Transport: {transport}")
+
+    mcp_server = create_mcp_server(project_root=path, config=config)
+
+    if transport not in ("stdio", "sse"):
+        console.print(f"[red]Unknown transport: {transport}[/red]")
+        raise typer.Exit(1)
+
+    mcp_server.run(transport=transport)
+
+
 if __name__ == "__main__":
     app()
