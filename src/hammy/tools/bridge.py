@@ -1,11 +1,15 @@
 """Cross-language bridge tool — links frontend endpoints to backend routes.
 
-Discovers connections between languages by matching:
-- JS fetch/axios URLs to PHP Route attributes
-- Symbol name similarity across languages
+Discovers connections between languages by matching endpoint nodes:
+- Providers: endpoints defined via route attributes/decorators (DEFINES edge)
+- Consumers: endpoints from API calls like fetch/axios (NETWORKS_TO edge)
+
+Language-agnostic — any language that emits ENDPOINT nodes participates.
 """
 
 from __future__ import annotations
+
+import re
 
 from hammy.schema.models import Edge, EdgeMetadata, Node, NodeType, RelationType
 
@@ -13,8 +17,8 @@ from hammy.schema.models import Edge, EdgeMetadata, Node, NodeType, RelationType
 def resolve_bridges(nodes: list[Node], edges: list[Edge]) -> list[Edge]:
     """Find cross-language connections between endpoint nodes.
 
-    Matches JavaScript outbound API calls (fetch/axios) to PHP route definitions
-    based on URL/path matching.
+    Matches consumer endpoints (API calls) to provider endpoints (route
+    definitions) across different languages based on URL/path matching.
 
     Args:
         nodes: All extracted nodes from the codebase.
@@ -25,31 +29,46 @@ def resolve_bridges(nodes: list[Node], edges: list[Edge]) -> list[Edge]:
     """
     bridge_edges: list[Edge] = []
 
-    # Collect PHP endpoints (defined by Route attributes)
-    php_endpoints: dict[str, Node] = {}
-    for node in nodes:
-        if node.type == NodeType.ENDPOINT and node.language == "php":
-            php_endpoints[_normalize_path(node.name)] = node
+    # Identify provider and consumer endpoint IDs from edge relationships
+    provider_ids: set[str] = set()
+    consumer_source_map: dict[str, str] = {}  # endpoint_id -> source_id
 
-    # Collect JS endpoints (from fetch/axios calls)
-    js_endpoints: dict[str, Node] = {}
-    for node in nodes:
-        if node.type == NodeType.ENDPOINT and node.language == "javascript":
-            js_endpoints[_normalize_path(node.name)] = node
+    for edge in edges:
+        if edge.relation == RelationType.DEFINES:
+            provider_ids.add(edge.target)
+        elif edge.relation == RelationType.NETWORKS_TO and edge.metadata.is_bridge:
+            consumer_source_map[edge.target] = edge.source
 
-    # Match JS endpoints to PHP endpoints
-    for js_path, js_node in js_endpoints.items():
-        for php_path, php_node in php_endpoints.items():
-            confidence = _match_paths(js_path, php_path)
+    # Build lookup dicts for endpoint nodes
+    providers: dict[str, Node] = {}
+    consumers: dict[str, Node] = {}
+
+    for node in nodes:
+        if node.type != NodeType.ENDPOINT:
+            continue
+        if node.id in provider_ids:
+            providers[_normalize_path(node.name)] = node
+        elif node.id in consumer_source_map:
+            consumers[_normalize_path(node.name)] = node
+
+    # Match consumers to providers across languages
+    for consumer_path, consumer_node in consumers.items():
+        for provider_path, provider_node in providers.items():
+            if consumer_node.language == provider_node.language:
+                continue  # Only bridge across different languages
+            confidence = _match_paths(consumer_path, provider_path)
             if confidence > 0.0:
                 bridge_edges.append(Edge(
-                    source=js_node.id,
-                    target=php_node.id,
+                    source=consumer_node.id,
+                    target=provider_node.id,
                     relation=RelationType.NETWORKS_TO,
                     metadata=EdgeMetadata(
                         is_bridge=True,
                         confidence=confidence,
-                        context=f"JS '{js_node.name}' -> PHP '{php_node.name}'",
+                        context=(
+                            f"{consumer_node.language} '{consumer_node.name}' -> "
+                            f"{provider_node.language} '{provider_node.name}'"
+                        ),
                     ),
                 ))
 
@@ -60,9 +79,8 @@ def _normalize_path(path: str) -> str:
     """Normalize an API path for comparison.
 
     Strips leading/trailing slashes and replaces path parameters
-    like {id} or :id with a wildcard placeholder.
+    like {id}, :id, or ${...} with a wildcard placeholder.
     """
-    import re
     path = path.strip("/")
     # Replace {param} style
     path = re.sub(r"\{[^}]+\}", "*", path)
@@ -84,7 +102,6 @@ def _match_paths(path_a: str, path_b: str) -> float:
     if path_a == path_b:
         return 1.0
 
-    # Split into segments and compare
     segments_a = path_a.split("/")
     segments_b = path_b.split("/")
 

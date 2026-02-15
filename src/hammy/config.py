@@ -19,7 +19,9 @@ class IgnoreConfig(BaseModel):
 class ParsingConfig(BaseModel):
     """Settings for AST parsing."""
 
-    languages: list[str] = Field(default_factory=lambda: ["php", "javascript"])
+    languages: list[str] = Field(
+        default_factory=lambda: ["php", "javascript", "python", "typescript", "go"]
+    )
     max_file_size_kb: int = 500
 
 

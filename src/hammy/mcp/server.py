@@ -182,6 +182,46 @@ def create_mcp_server(
         return "\n".join(lines)
 
     @mcp.tool(
+        name="find_usages",
+        description=(
+            "Find all callers of a given function or method. "
+            "Searches the call graph to find which functions/methods invoke the queried symbol."
+        ),
+    )
+    def find_usages(symbol_name: str) -> str:
+        """Find all callers of a function or method.
+
+        Args:
+            symbol_name: Name of the function/method to find callers of.
+        """
+        query_lower = symbol_name.lower()
+
+        callers = []
+        for edge in all_edges:
+            if edge.relation != RelationType.CALLS:
+                continue
+            context = edge.metadata.context.lower() if edge.metadata.context else ""
+            if query_lower not in context:
+                continue
+            source_node = next((n for n in all_nodes if n.id == edge.source), None)
+            if source_node:
+                callers.append((source_node, edge.metadata.context))
+
+        if not callers:
+            return f"No callers of '{symbol_name}' found."
+
+        lines = [f"Callers of '{symbol_name}':"]
+        for node, context in callers[:30]:
+            lines.append(
+                f"  {node.type.value}: {node.name} "
+                f"({node.loc.file}:{node.loc.lines[0]}) "
+                f"calls: {context}"
+            )
+        if len(callers) > 30:
+            lines.append(f"\n... and {len(callers) - 30} more callers.")
+        return "\n".join(lines)
+
+    @mcp.tool(
         name="list_files",
         description="List all indexed files, optionally filtered by language.",
     )

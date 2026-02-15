@@ -12,14 +12,7 @@ from pathlib import Path
 from typing import Iterator
 
 from hammy.ignore import IgnoreManager
-
-# Extension-to-language mapping
-EXTENSION_MAP: dict[str, str] = {
-    ".php": "php",
-    ".js": "javascript",
-    ".jsx": "javascript",
-    ".mjs": "javascript",
-}
+from hammy.tools.parser import EXTENSION_MAP
 
 
 @dataclass

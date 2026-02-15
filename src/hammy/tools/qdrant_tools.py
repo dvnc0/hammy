@@ -28,6 +28,7 @@ class QdrantManager:
 
     CODES_COLLECTION = "code_symbols"
     COMMITS_COLLECTION = "commits"
+    BATCH_SIZE = 500
 
     def __init__(self, config: QdrantConfig | None = None):
         if config is None:
@@ -62,9 +63,13 @@ class QdrantManager:
                 self._client.delete_collection(name)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings for a list of texts."""
-        embeddings = self._model.encode(texts)
-        return embeddings.tolist()
+        """Generate embeddings for a list of texts, batched to avoid OOM."""
+        all_embeddings: list[list[float]] = []
+        for i in range(0, len(texts), self.BATCH_SIZE):
+            batch = texts[i : i + self.BATCH_SIZE]
+            embeddings = self._model.encode(batch)
+            all_embeddings.extend(embeddings.tolist())
+        return all_embeddings
 
     def upsert_nodes(self, nodes: list[Node]) -> int:
         """Upsert code symbol nodes into the code collection.
@@ -107,7 +112,8 @@ class QdrantManager:
             ))
 
         collection = self._collection_name(self.CODES_COLLECTION)
-        self._client.upsert(collection_name=collection, points=points)
+        for i in range(0, len(points), self.BATCH_SIZE):
+            self._client.upsert(collection_name=collection, points=points[i : i + self.BATCH_SIZE])
         return len(points)
 
     def upsert_commits(
@@ -140,7 +146,8 @@ class QdrantManager:
             ))
 
         collection = self._collection_name(self.COMMITS_COLLECTION)
-        self._client.upsert(collection_name=collection, points=points)
+        for i in range(0, len(points), self.BATCH_SIZE):
+            self._client.upsert(collection_name=collection, points=points[i : i + self.BATCH_SIZE])
         return len(points)
 
     def search_code(

@@ -55,7 +55,7 @@ class TestDetectLanguage:
         assert detect_language(Path("module.mjs")) == "javascript"
 
     def test_unknown(self):
-        assert detect_language(Path("file.py")) is None
+        assert detect_language(Path("file.rb")) is None
 
     def test_css(self):
         assert detect_language(Path("styles.css")) is None

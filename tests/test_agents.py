@@ -28,7 +28,7 @@ from hammy.tools.bridge import resolve_bridges
 def sample_nodes() -> list[Node]:
     """Create a set of nodes that should have bridge matches."""
     return [
-        # PHP route endpoint
+        # PHP route endpoint (provider — defined by Route attribute)
         Node(
             id=Node.make_id("UserController.php", "endpoint:/api/v1/users"),
             type=NodeType.ENDPOINT,
@@ -43,7 +43,7 @@ def sample_nodes() -> list[Node]:
             loc=Location(file="UserController.php", lines=(16, 16)),
             language="php",
         ),
-        # JS fetch endpoint
+        # JS fetch endpoint (consumer — from fetch/axios call)
         Node(
             id=Node.make_id("api.js", "endpoint:/api/v1/users"),
             type=NodeType.ENDPOINT,
@@ -66,12 +66,51 @@ def sample_nodes() -> list[Node]:
             loc=Location(file="UserController.php", lines=(8, 27)),
             language="php",
         ),
+        # JS function that makes the fetch calls
+        Node(
+            id=Node.make_id("api.js", "fetchUsers"),
+            type=NodeType.FUNCTION,
+            name="fetchUsers",
+            loc=Location(file="api.js", lines=(3, 6)),
+            language="javascript",
+        ),
+    ]
+
+
+@pytest.fixture
+def sample_edges(sample_nodes) -> list[Edge]:
+    """Create edges that establish provider/consumer relationships for bridges."""
+    return [
+        # PHP class DEFINES its endpoint (provider)
+        Edge(
+            source=Node.make_id("UserController.php", "App\\Controllers\\UserController"),
+            target=Node.make_id("UserController.php", "endpoint:/api/v1/users"),
+            relation=RelationType.DEFINES,
+        ),
+        Edge(
+            source=Node.make_id("UserController.php", "App\\Controllers\\UserController"),
+            target=Node.make_id("UserController.php", "endpoint:/api/v1/users/{id}/pay"),
+            relation=RelationType.DEFINES,
+        ),
+        # JS function NETWORKS_TO its endpoint (consumer)
+        Edge(
+            source=Node.make_id("api.js", "fetchUsers"),
+            target=Node.make_id("api.js", "endpoint:/api/v1/users"),
+            relation=RelationType.NETWORKS_TO,
+            metadata=EdgeMetadata(is_bridge=True, context="fetch('/api/v1/users')"),
+        ),
+        Edge(
+            source=Node.make_id("api.js", "fetchUsers"),
+            target=Node.make_id("api.js", "endpoint:/api/v1/users/{id}/pay"),
+            relation=RelationType.NETWORKS_TO,
+            metadata=EdgeMetadata(is_bridge=True, context="fetch('/api/v1/users/{id}/pay')"),
+        ),
     ]
 
 
 class TestBridgeResolution:
-    def test_exact_match(self, sample_nodes):
-        bridges = resolve_bridges(sample_nodes, [])
+    def test_exact_match(self, sample_nodes, sample_edges):
+        bridges = resolve_bridges(sample_nodes, sample_edges)
         # /api/v1/users should match exactly
         exact_matches = [
             b for b in bridges
@@ -79,13 +118,13 @@ class TestBridgeResolution:
         ]
         assert len(exact_matches) >= 1
 
-    def test_wildcard_match(self, sample_nodes):
-        bridges = resolve_bridges(sample_nodes, [])
+    def test_wildcard_match(self, sample_nodes, sample_edges):
+        bridges = resolve_bridges(sample_nodes, sample_edges)
         # /api/v1/users/{id}/pay should match with wildcard
         assert len(bridges) >= 2
 
-    def test_bridge_metadata(self, sample_nodes):
-        bridges = resolve_bridges(sample_nodes, [])
+    def test_bridge_metadata(self, sample_nodes, sample_edges):
+        bridges = resolve_bridges(sample_nodes, sample_edges)
         for bridge in bridges:
             assert bridge.metadata.is_bridge is True
             assert bridge.metadata.confidence > 0.0
@@ -214,10 +253,11 @@ class TestExplorerTools:
 
         factory = ParserFactory()
         tools = make_explorer_tools(tmp_path, factory, [], [])
-        assert len(tools) == 4
+        assert len(tools) == 5
         tool_names = [t.name for t in tools]
         assert "AST Query" in tool_names
         assert "Search Code Symbols" in tool_names
+        assert "Find Usages" in tool_names
         assert "Find Cross-Language Bridges" in tool_names
         assert "List Files" in tool_names
 

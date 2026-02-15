@@ -1,6 +1,6 @@
 # Hammy configuration
 project:
-  name: "my-project"
+  name: "hammy"
   root: "."
 
 ignore:
@@ -13,6 +13,7 @@ parsing:
   languages:
     - php
     - javascript
+    - python
   max_file_size_kb: 500
 
 qdrant:

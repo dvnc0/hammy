@@ -82,12 +82,15 @@ def index(
     ),
 ) -> None:
     """Index a codebase — parse files, extract symbols, store in Qdrant."""
+    from dotenv import load_dotenv
+
     from hammy.config import HammyConfig
     from hammy.indexer.code_indexer import index_codebase
     from hammy.indexer.commit_indexer import index_commits
     from hammy.tools.qdrant_tools import QdrantManager
 
     path = path.resolve()
+    load_dotenv(path / ".env")
     config = HammyConfig.load(path)
 
     qdrant = None
@@ -156,12 +159,18 @@ def query(
     ),
 ) -> None:
     """Query the codebase using AI agents."""
+    from dotenv import load_dotenv
+
     from hammy.config import HammyConfig
     from hammy.core.crew import HammyCrew
     from hammy.indexer.code_indexer import index_codebase
     from hammy.tools.qdrant_tools import QdrantManager
 
     path = path.resolve()
+
+    # Load .env from project root so API keys are available
+    load_dotenv(path / ".env")
+
     config = HammyConfig.load(path)
 
     # Check that LLM is configured
@@ -203,10 +212,18 @@ def query(
         console.print(f"[red]Crew analysis failed:[/red] {e}\n")
         console.print("[yellow]Falling back to simple search...[/yellow]\n")
         
-        # Simple fallback: just list relevant entities
+        # Simple fallback: keyword search over parsed nodes
+        keywords = question.lower().split()
+        matched = [
+            n for n in nodes
+            if any(kw in n.name.lower() or (n.summary and kw in n.summary.lower()) for kw in keywords)
+        ]
+        if not matched:
+            matched = nodes[:20]
+
         console.print("[bold]Relevant code entities found:[/bold]\n")
-        for node in filtered_nodes[:20]:
-            console.print(f"  • {node.type}: [cyan]{node.name}[/cyan]")
+        for node in matched[:20]:
+            console.print(f"  • {node.type.value}: [cyan]{node.name}[/cyan]")
             console.print(f"    Location: {node.loc.file}:{node.loc.lines[0]}-{node.loc.lines[1]}")
             if node.summary:
                 console.print(f"    {node.summary}")
@@ -274,10 +291,13 @@ def serve(
     ),
 ) -> None:
     """Start the Hammy MCP server for AI tool integration."""
+    from dotenv import load_dotenv
+
     from hammy.config import HammyConfig
     from hammy.mcp.server import create_mcp_server
 
     path = path.resolve()
+    load_dotenv(path / ".env")
     config = HammyConfig.load(path)
 
     console.print(f"[bold blue]Starting Hammy MCP server[/bold blue]")

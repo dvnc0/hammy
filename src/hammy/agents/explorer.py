@@ -106,6 +106,39 @@ def make_explorer_tools(
 
         return "\n".join(lines)
 
+    @tool("Find Usages")
+    def find_usages(symbol_name: str) -> str:
+        """Find all callers of a given function or method.
+
+        Args:
+            symbol_name: Name of the function/method to find callers of.
+        """
+        from hammy.schema.models import RelationType
+
+        query_lower = symbol_name.lower()
+        callers = []
+        for edge in all_edges:
+            if edge.relation != RelationType.CALLS:
+                continue
+            context = edge.metadata.context.lower() if edge.metadata.context else ""
+            if query_lower not in context:
+                continue
+            source_node = next((n for n in all_nodes if n.id == edge.source), None)
+            if source_node:
+                callers.append((source_node, edge.metadata.context))
+
+        if not callers:
+            return f"No callers of '{symbol_name}' found."
+
+        lines = [f"Callers of '{symbol_name}':"]
+        for node, context in callers[:20]:
+            lines.append(
+                f"  {node.type.value}: {node.name} "
+                f"({node.loc.file}:{node.loc.lines[0]}) "
+                f"calls: {context}"
+            )
+        return "\n".join(lines)
+
     @tool("Find Cross-Language Bridges")
     def find_bridges() -> str:
         """Find all cross-language connections (e.g., JS fetch calls matching PHP routes).
@@ -151,4 +184,4 @@ def make_explorer_tools(
 
         return "\n".join(lines)
 
-    return [ast_query, search_symbols, find_bridges, list_files]
+    return [ast_query, search_symbols, find_usages, find_bridges, list_files]
