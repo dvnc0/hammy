@@ -253,13 +253,169 @@ class TestExplorerTools:
 
         factory = ParserFactory()
         tools = make_explorer_tools(tmp_path, factory, [], [])
-        assert len(tools) == 5
+        assert len(tools) == 6
         tool_names = [t.name for t in tools]
         assert "AST Query" in tool_names
         assert "Search Code Symbols" in tool_names
+        assert "Lookup Symbol" in tool_names
         assert "Find Usages" in tool_names
         assert "Find Cross-Language Bridges" in tool_names
         assert "List Files" in tool_names
+
+
+def _make_node(name: str, ntype: NodeType, file: str, language: str = "php") -> Node:
+    return Node(
+        id=Node.make_id(file, name),
+        type=ntype,
+        name=name,
+        loc=Location(file=file, lines=(1, 10)),
+        language=language,
+    )
+
+
+def _make_calls_edge(source_id: str, callee: str) -> Edge:
+    return Edge(
+        source=source_id,
+        target=Node.make_id("", callee),
+        relation=RelationType.CALLS,
+        metadata=EdgeMetadata(confidence=0.8, context=callee),
+    )
+
+
+class TestSearchSymbolsRanking:
+    """Verify ranked result ordering: exact > prefix > substring > summary."""
+
+    def test_exact_floats_above_prefix(self, tmp_path: Path):
+        from hammy.agents.explorer import make_explorer_tools
+        from hammy.tools.parser import ParserFactory
+
+        nodes = [
+            _make_node("getRenewList", NodeType.METHOD, "a.php"),   # prefix match
+            _make_node("getRenew", NodeType.METHOD, "b.php"),        # exact match
+            _make_node("checkRenewStatus", NodeType.METHOD, "c.php"),  # substring
+        ]
+        tools = make_explorer_tools(tmp_path, ParserFactory(), nodes, [])
+        search = next(t for t in tools if t.name == "Search Code Symbols")
+        result = search.func(query="getRenew")
+
+        lines = result.strip().splitlines()
+        # First result should be the exact match
+        assert "getRenew" in lines[0]
+        assert "getRenewList" not in lines[0]
+
+    def test_exact_case_insensitive(self, tmp_path: Path):
+        from hammy.agents.explorer import make_explorer_tools
+        from hammy.tools.parser import ParserFactory
+
+        nodes = [_make_node("GetRenew", NodeType.METHOD, "a.php")]
+        tools = make_explorer_tools(tmp_path, ParserFactory(), nodes, [])
+        search = next(t for t in tools if t.name == "Search Code Symbols")
+        result = search.func(query="getrenew")
+        assert "GetRenew" in result
+
+    def test_file_filter_narrows_results(self, tmp_path: Path):
+        from hammy.agents.explorer import make_explorer_tools
+        from hammy.tools.parser import ParserFactory
+
+        nodes = [
+            _make_node("save", NodeType.METHOD, "controllers/UserController.php"),
+            _make_node("save", NodeType.METHOD, "models/Post.php"),
+        ]
+        tools = make_explorer_tools(tmp_path, ParserFactory(), nodes, [])
+        search = next(t for t in tools if t.name == "Search Code Symbols")
+        result = search.func(query="save", file_filter="controllers")
+        assert "controllers" in result
+        assert "models" not in result
+
+
+class TestLookupSymbol:
+    """Verify lookup_symbol exact definition lookup."""
+
+    def test_exact_match_returned(self, tmp_path: Path):
+        from hammy.agents.explorer import make_explorer_tools
+        from hammy.tools.parser import ParserFactory
+
+        nodes = [
+            _make_node("getRenew", NodeType.METHOD, "Subscription.php"),
+            _make_node("getRenewToken", NodeType.METHOD, "Token.php"),
+        ]
+        tools = make_explorer_tools(tmp_path, ParserFactory(), nodes, [])
+        lookup = next(t for t in tools if t.name == "Lookup Symbol")
+        result = lookup.func(name="getRenew")
+
+        assert "getRenew" in result
+        assert "Subscription.php" in result
+        # Should not include getRenewToken
+        assert "getRenewToken" not in result
+
+    def test_shows_not_found_with_hint(self, tmp_path: Path):
+        from hammy.agents.explorer import make_explorer_tools
+        from hammy.tools.parser import ParserFactory
+
+        tools = make_explorer_tools(tmp_path, ParserFactory(), [], [])
+        lookup = next(t for t in tools if t.name == "Lookup Symbol")
+        result = lookup.func(name="totallyMissing")
+        assert "not found" in result.lower() or "search_symbols" in result
+
+    def test_node_type_filter(self, tmp_path: Path):
+        from hammy.agents.explorer import make_explorer_tools
+        from hammy.tools.parser import ParserFactory
+
+        nodes = [
+            _make_node("process", NodeType.METHOD, "a.php"),
+            _make_node("process", NodeType.FUNCTION, "b.php"),
+        ]
+        tools = make_explorer_tools(tmp_path, ParserFactory(), nodes, [])
+        lookup = next(t for t in tools if t.name == "Lookup Symbol")
+        result = lookup.func(name="process", node_type="function")
+        assert "b.php" in result
+        assert "a.php" not in result
+
+
+class TestFindUsagesWordBoundary:
+    """Verify find_usages uses word-boundary matching, not substring."""
+
+    def test_exact_name_matches(self, tmp_path: Path):
+        from hammy.agents.explorer import make_explorer_tools
+        from hammy.tools.parser import ParserFactory
+
+        caller = _make_node("myMethod", NodeType.METHOD, "a.php")
+        edge = _make_calls_edge(caller.id, "save")
+        nodes = [caller]
+        tools = make_explorer_tools(tmp_path, ParserFactory(), nodes, [edge])
+        find = next(t for t in tools if t.name == "Find Usages")
+        result = find.func(symbol_name="save")
+        assert "myMethod" in result
+
+    def test_no_mid_word_match(self, tmp_path: Path):
+        from hammy.agents.explorer import make_explorer_tools
+        from hammy.tools.parser import ParserFactory
+
+        caller = _make_node("someFunc", NodeType.FUNCTION, "a.php")
+        # Edge calls "saveAll" — should NOT match a search for "save"
+        edge = _make_calls_edge(caller.id, "saveAll")
+        nodes = [caller]
+        tools = make_explorer_tools(tmp_path, ParserFactory(), nodes, [edge])
+        find = next(t for t in tools if t.name == "Find Usages")
+        result = find.func(symbol_name="save")
+        assert "No call sites" in result
+
+    def test_file_filter(self, tmp_path: Path):
+        from hammy.agents.explorer import make_explorer_tools
+        from hammy.tools.parser import ParserFactory
+
+        caller_ctrl = _make_node("ctrlMethod", NodeType.METHOD, "controllers/Ctrl.php")
+        caller_model = _make_node("modelMethod", NodeType.METHOD, "models/Model.php")
+        edges = [
+            _make_calls_edge(caller_ctrl.id, "getRenew"),
+            _make_calls_edge(caller_model.id, "getRenew"),
+        ]
+        nodes = [caller_ctrl, caller_model]
+        tools = make_explorer_tools(tmp_path, ParserFactory(), nodes, edges)
+        find = next(t for t in tools if t.name == "Find Usages")
+        result = find.func(symbol_name="getRenew", file_filter="controllers")
+        assert "ctrlMethod" in result
+        assert "modelMethod" not in result
 
 
 class TestHistorianTools:

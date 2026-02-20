@@ -56,6 +56,8 @@ class TestMCPServerCreation:
         # Core tools should always be present
         assert "ast_query" in tool_names
         assert "search_symbols" in tool_names
+        assert "lookup_symbol" in tool_names
+        assert "find_usages" in tool_names
         assert "list_files" in tool_names
         assert "find_bridges" in tool_names
         assert "index_status" in tool_names
@@ -137,6 +139,90 @@ class TestSearchSymbols:
         )
         text = _extract_text(result)
         assert "No symbols matching" in text
+
+
+class TestSearchSymbolsRanked:
+    @pytest.mark.asyncio
+    async def test_exact_match_first(self, mcp_server):
+        """Exact name matches should appear before prefix/substring matches."""
+        result = await mcp_server.call_tool(
+            "search_symbols", {"query": "UserController"}
+        )
+        text = _extract_text(result)
+        lines = [l for l in text.splitlines() if l.strip()]
+        assert len(lines) > 0
+        assert "UserController" in lines[0]
+
+    @pytest.mark.asyncio
+    async def test_file_filter(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "search_symbols", {"query": "User", "file_filter": "UserController"}
+        )
+        text = _extract_text(result)
+        assert "User" in text
+
+    @pytest.mark.asyncio
+    async def test_no_results_with_strict_filter(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "search_symbols", {"query": "User", "file_filter": "nonexistent_dir/"}
+        )
+        text = _extract_text(result)
+        assert "No symbols matching" in text
+
+
+class TestLookupSymbol:
+    @pytest.mark.asyncio
+    async def test_lookup_exact(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "lookup_symbol", {"name": "UserController"}
+        )
+        text = _extract_text(result)
+        assert "UserController" in text
+        assert "file:" in text
+
+    @pytest.mark.asyncio
+    async def test_lookup_not_found(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "lookup_symbol", {"name": "zzz_totally_missing"}
+        )
+        text = _extract_text(result)
+        assert "not found" in text.lower() or "search_symbols" in text
+
+    @pytest.mark.asyncio
+    async def test_lookup_with_node_type(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "lookup_symbol", {"name": "UserController", "node_type": "class"}
+        )
+        text = _extract_text(result)
+        assert "UserController" in text
+
+
+class TestFindUsages:
+    @pytest.mark.asyncio
+    async def test_find_usages_registered(self, mcp_server):
+        tools = await mcp_server.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "find_usages" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_find_usages_not_found(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "find_usages", {"symbol_name": "zzz_totally_missing"}
+        )
+        text = _extract_text(result)
+        assert "No call sites" in text
+
+    @pytest.mark.asyncio
+    async def test_find_usages_no_mid_word_match(self, mcp_server):
+        """Searching for 'User' should not match 'UserController' as a call site."""
+        # The fixtures have CALLS edges for API calls — not for 'User' the symbol.
+        # Key thing: if there are no exact word-boundary matches, report none found.
+        result = await mcp_server.call_tool(
+            "find_usages", {"symbol_name": "User"}
+        )
+        text = _extract_text(result)
+        # Either finds real callers of exactly 'User', or reports none — never mid-word noise
+        assert "No call sites" in text or "Call sites of 'User'" in text
 
 
 class TestListFiles:

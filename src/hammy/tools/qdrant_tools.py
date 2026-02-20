@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -195,6 +196,101 @@ class QdrantManager:
             {"score": r.score, **r.payload}
             for r in results.points
         ]
+
+    def search_code_mmr(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        fetch_k: int | None = None,
+        lambda_: float = 0.6,
+        language: str | None = None,
+        node_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Semantic search with Maximal Marginal Relevance for diverse results.
+
+        Fetches a larger candidate pool then iteratively selects items that
+        balance relevance to the query against redundancy with already-selected
+        results. Prevents returning many near-duplicate results from the same
+        file or class.
+
+        Args:
+            query: Natural language search query.
+            limit: Final number of results to return.
+            fetch_k: Candidate pool size (defaults to limit * 4, min 40).
+            lambda_: Trade-off between relevance (1.0) and diversity (0.0).
+            language: Optional language filter.
+            node_type: Optional node type filter.
+        """
+        if fetch_k is None:
+            fetch_k = max(limit * 4, 40)
+
+        query_embedding = self.embed([query])[0]
+        query_vec = np.array(query_embedding, dtype=np.float32)
+        q_norm = np.linalg.norm(query_vec)
+        if q_norm > 0:
+            query_vec = query_vec / q_norm
+
+        conditions = []
+        if language:
+            conditions.append(
+                FieldCondition(key="language", match=MatchValue(value=language))
+            )
+        if node_type:
+            conditions.append(
+                FieldCondition(key="type", match=MatchValue(value=node_type))
+            )
+
+        search_filter = Filter(must=conditions) if conditions else None
+        collection = self._collection_name(self.CODES_COLLECTION)
+
+        results = self._client.query_points(
+            collection_name=collection,
+            query=query_embedding,
+            query_filter=search_filter,
+            limit=fetch_k,
+            with_vectors=True,
+        )
+
+        if not results.points:
+            return []
+
+        # Build normalized candidate vectors
+        candidates: list[dict[str, Any]] = []
+        for r in results.points:
+            raw = r.vector
+            if isinstance(raw, dict):
+                raw = next(iter(raw.values()))
+            vec = np.array(raw, dtype=np.float32)
+            norm = np.linalg.norm(vec)
+            if norm > 0:
+                vec = vec / norm
+            rel = float(np.dot(query_vec, vec))
+            candidates.append({"payload": r.payload, "score": r.score, "vec": vec, "rel": rel})
+
+        # MMR selection loop
+        selected: list[dict[str, Any]] = []
+        selected_vecs: list[np.ndarray] = []
+
+        while candidates and len(selected) < limit:
+            if not selected_vecs:
+                best_idx = max(range(len(candidates)), key=lambda i: candidates[i]["rel"])
+            else:
+                sel_matrix = np.stack(selected_vecs)  # (k, dim)
+                best_score = float("-inf")
+                best_idx = 0
+                for i, c in enumerate(candidates):
+                    redundancy = float(np.max(sel_matrix @ c["vec"]))
+                    mmr = lambda_ * c["rel"] - (1 - lambda_) * redundancy
+                    if mmr > best_score:
+                        best_score = mmr
+                        best_idx = i
+
+            chosen = candidates.pop(best_idx)
+            selected.append({"score": chosen["score"], **chosen["payload"]})
+            selected_vecs.append(chosen["vec"])
+
+        return selected
 
     def search_commits(
         self,
