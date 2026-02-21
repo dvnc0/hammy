@@ -247,20 +247,38 @@ class TestContextPackGeneration:
 
 
 class TestExplorerTools:
-    def test_creates_tools(self, tmp_path: Path):
+    def test_creates_core_tools_without_qdrant(self, tmp_path: Path):
         from hammy.agents.explorer import make_explorer_tools
         from hammy.tools.parser import ParserFactory
 
         factory = ParserFactory()
         tools = make_explorer_tools(tmp_path, factory, [], [])
-        assert len(tools) == 6
+        assert len(tools) == 7
         tool_names = [t.name for t in tools]
         assert "AST Query" in tool_names
         assert "Search Code Symbols" in tool_names
         assert "Lookup Symbol" in tool_names
         assert "Find Usages" in tool_names
+        assert "Impact Analysis" in tool_names
         assert "Find Cross-Language Bridges" in tool_names
         assert "List Files" in tool_names
+        # Brain tools should NOT be present without qdrant
+        assert "Store Context" not in tool_names
+        assert "Recall Context" not in tool_names
+        assert "List Context" not in tool_names
+
+    def test_adds_brain_tools_with_qdrant(self, tmp_path: Path):
+        from unittest.mock import MagicMock
+        from hammy.agents.explorer import make_explorer_tools
+        from hammy.tools.parser import ParserFactory
+
+        mock_qdrant = MagicMock()
+        tools = make_explorer_tools(tmp_path, ParserFactory(), [], [], qdrant=mock_qdrant)
+        assert len(tools) == 10
+        tool_names = [t.name for t in tools]
+        assert "Store Context" in tool_names
+        assert "Recall Context" in tool_names
+        assert "List Context" in tool_names
 
 
 def _make_node(name: str, ntype: NodeType, file: str, language: str = "php") -> Node:
@@ -416,6 +434,70 @@ class TestFindUsagesWordBoundary:
         result = find.func(symbol_name="getRenew", file_filter="controllers")
         assert "ctrlMethod" in result
         assert "modelMethod" not in result
+
+
+class TestImpactAnalysis:
+    """Tests for the impact_analysis tool (N-hop call graph traversal)."""
+
+    def _setup(self, tmp_path):
+        from hammy.agents.explorer import make_explorer_tools
+        from hammy.tools.parser import ParserFactory
+
+        # Call graph: getRenew <- processRenewal <- handleRequest
+        target = _make_node("getRenew", NodeType.METHOD, "Subscription.php")
+        caller1 = _make_node("processRenewal", NodeType.METHOD, "RenewalService.php")
+        caller2 = _make_node("handleRequest", NodeType.METHOD, "RenewalController.php")
+        edges = [
+            _make_calls_edge(caller1.id, "getRenew"),
+            _make_calls_edge(caller2.id, "processRenewal"),
+        ]
+        nodes = [target, caller1, caller2]
+        tools = make_explorer_tools(tmp_path, ParserFactory(), nodes, edges)
+        impact = next(t for t in tools if t.name == "Impact Analysis")
+        return impact, nodes
+
+    def test_finds_direct_callers(self, tmp_path: Path):
+        impact, _ = self._setup(tmp_path)
+        result = impact.func(symbol_name="getRenew", depth=1)
+        assert "processRenewal" in result
+        assert "Hop 1" in result
+
+    def test_finds_transitive_callers(self, tmp_path: Path):
+        impact, _ = self._setup(tmp_path)
+        result = impact.func(symbol_name="getRenew", depth=3)
+        assert "processRenewal" in result
+        assert "handleRequest" in result
+
+    def test_no_callers_message(self, tmp_path: Path):
+        impact, _ = self._setup(tmp_path)
+        result = impact.func(symbol_name="handleRequest", depth=2, direction="callers")
+        assert "No callers" in result
+
+    def test_callees_direction(self, tmp_path: Path):
+        from hammy.agents.explorer import make_explorer_tools
+        from hammy.tools.parser import ParserFactory
+
+        # handleRequest calls processRenewal calls getRenew
+        get_renew = _make_node("getRenew", NodeType.METHOD, "Subscription.php")
+        process = _make_node("processRenewal", NodeType.METHOD, "RenewalService.php")
+        handle = _make_node("handleRequest", NodeType.METHOD, "RenewalController.php")
+        edges = [
+            _make_calls_edge(handle.id, "processRenewal"),
+            _make_calls_edge(process.id, "getRenew"),
+        ]
+        nodes = [get_renew, process, handle]
+        tools = make_explorer_tools(tmp_path, ParserFactory(), nodes, edges)
+        impact = next(t for t in tools if t.name == "Impact Analysis")
+
+        result = impact.func(symbol_name="handleRequest", depth=3, direction="callees")
+        assert "processRenewal" in result
+
+    def test_depth_limits_hops(self, tmp_path: Path):
+        impact, _ = self._setup(tmp_path)
+        # With depth=1 we should only see hop-1 callers (processRenewal), not hop-2 (handleRequest)
+        result = impact.func(symbol_name="getRenew", depth=1, direction="callers")
+        assert "processRenewal" in result
+        assert "handleRequest" not in result
 
 
 class TestHistorianTools:

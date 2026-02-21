@@ -53,7 +53,7 @@ class HammyCrew:
                 vcs = None
 
         explorer_tools = make_explorer_tools(
-            self.project_root, parser_factory, nodes, edges
+            self.project_root, parser_factory, nodes, edges, qdrant
         )
 
         historian_tools = []

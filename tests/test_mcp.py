@@ -58,6 +58,7 @@ class TestMCPServerCreation:
         assert "search_symbols" in tool_names
         assert "lookup_symbol" in tool_names
         assert "find_usages" in tool_names
+        assert "impact_analysis" in tool_names
         assert "list_files" in tool_names
         assert "find_bridges" in tool_names
         assert "index_status" in tool_names
@@ -327,6 +328,140 @@ class TestReindex:
         tools = await mcp_server.list_tools()
         tool_names = {t.name for t in tools}
         assert "reindex" in tool_names
+
+
+class TestImpactAnalysis:
+    @pytest.mark.asyncio
+    async def test_impact_analysis_registered(self, mcp_server):
+        tools = await mcp_server.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "impact_analysis" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_impact_analysis_no_callers(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "impact_analysis", {"symbol_name": "zzz_totally_missing", "depth": 1}
+        )
+        text = _extract_text(result)
+        assert "No callers" in text or "No call graph" in text
+
+    @pytest.mark.asyncio
+    async def test_impact_analysis_callers_direction(self, mcp_server):
+        # Just ensure it runs and produces output with the right section header
+        result = await mcp_server.call_tool(
+            "impact_analysis",
+            {"symbol_name": "getUser", "depth": 2, "direction": "callers"},
+        )
+        text = _extract_text(result)
+        assert "Callers of" in text
+
+    @pytest.mark.asyncio
+    async def test_impact_analysis_both_direction(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "impact_analysis",
+            {"symbol_name": "getUser", "depth": 2, "direction": "both"},
+        )
+        text = _extract_text(result)
+        assert "Callers of" in text
+        assert "Callees of" in text
+
+
+class TestBrainTools:
+    """Tests for brain (working memory) tools — only present when Qdrant is available."""
+
+    @pytest.mark.asyncio
+    async def test_brain_tools_absent_without_qdrant(self, project_dir: Path):
+        """Without Qdrant the brain tools should not be registered."""
+        from unittest.mock import patch
+        from hammy.config import HammyConfig
+        from hammy.mcp.server import create_mcp_server
+
+        config = HammyConfig.load(project_dir)
+        # Force Qdrant to be unavailable so brain tools are not registered
+        with patch("hammy.mcp.server.QdrantManager", side_effect=Exception("no qdrant")):
+            server = create_mcp_server(project_root=project_dir, config=config)
+
+        tools = await server.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "store_context" not in tool_names
+        assert "recall_context" not in tool_names
+        assert "list_context" not in tool_names
+
+    @pytest.mark.asyncio
+    async def test_brain_tools_present_with_qdrant(self, project_dir: Path):
+        """With Qdrant the brain tools should be registered."""
+        from hammy.config import QdrantConfig
+        from hammy.tools.qdrant_tools import QdrantManager
+
+        def qdrant_available() -> bool:
+            try:
+                from qdrant_client import QdrantClient
+                QdrantClient(host="localhost", port=6333, timeout=2).get_collections()
+                return True
+            except Exception:
+                return False
+
+        if not qdrant_available():
+            pytest.skip("Qdrant not available")
+
+        from hammy.config import HammyConfig
+        config = HammyConfig.load(project_dir)
+        config.qdrant = QdrantConfig(collection_prefix="hammy_brain_test")
+        qdrant = QdrantManager(config.qdrant)
+        qdrant.delete_collections()
+        qdrant.ensure_collections()
+        try:
+            server = create_mcp_server(project_root=project_dir, config=config)
+            tools = await server.list_tools()
+            tool_names = {t.name for t in tools}
+            assert "store_context" in tool_names
+            assert "recall_context" in tool_names
+            assert "list_context" in tool_names
+        finally:
+            qdrant.delete_collections()
+
+    @pytest.mark.asyncio
+    async def test_store_and_recall(self, project_dir: Path):
+        """store_context then recall_context by key should round-trip."""
+        from hammy.config import QdrantConfig
+        from hammy.tools.qdrant_tools import QdrantManager
+
+        def qdrant_available() -> bool:
+            try:
+                from qdrant_client import QdrantClient
+                QdrantClient(host="localhost", port=6333, timeout=2).get_collections()
+                return True
+            except Exception:
+                return False
+
+        if not qdrant_available():
+            pytest.skip("Qdrant not available")
+
+        from hammy.config import HammyConfig
+        config = HammyConfig.load(project_dir)
+        config.qdrant = QdrantConfig(collection_prefix="hammy_brain_rt_test")
+        qdrant = QdrantManager(config.qdrant)
+        qdrant.delete_collections()
+        qdrant.ensure_collections()
+        try:
+            server = create_mcp_server(project_root=project_dir, config=config)
+            # Store
+            result = await server.call_tool("store_context", {
+                "key": "test-finding",
+                "content": "getRenew called from 3 places.",
+                "tags": "research",
+            })
+            assert "test-finding" in _extract_text(result)
+            # Recall by key
+            result = await server.call_tool("recall_context", {"key": "test-finding"})
+            text = _extract_text(result)
+            assert "getRenew" in text
+            assert "test-finding" in text
+            # List
+            result = await server.call_tool("list_context", {})
+            assert "test-finding" in _extract_text(result)
+        finally:
+            qdrant.delete_collections()
 
 
 class TestMCPWithVCS:

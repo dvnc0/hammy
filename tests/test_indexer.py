@@ -173,6 +173,66 @@ class TestQdrantManager:
         stats = qdrant.get_stats()
         assert stats["code_symbols"] == 0
         assert stats["commits"] == 0
+        assert stats["brain"] == 0
+
+
+@requires_qdrant
+class TestBrain:
+    def test_store_and_retrieve_by_key(self, qdrant: QdrantManager):
+        qdrant.upsert_brain_entry(
+            "test-key",
+            "getRenew is called from 3 controllers.",
+            tags=["payment"],
+            source_files=["RenewController.php"],
+        )
+        results = qdrant.search_brain(key="test-key")
+        assert len(results) == 1
+        assert results[0]["key"] == "test-key"
+        assert "getRenew" in results[0]["content"]
+        assert "payment" in results[0]["tags"]
+        assert "RenewController.php" in results[0]["source_files"]
+
+    def test_overwrite_same_key(self, qdrant: QdrantManager):
+        qdrant.upsert_brain_entry("my-key", "first content")
+        qdrant.upsert_brain_entry("my-key", "second content")
+        results = qdrant.search_brain(key="my-key")
+        assert len(results) == 1
+        assert results[0]["content"] == "second content"
+
+    def test_semantic_search(self, qdrant: QdrantManager):
+        qdrant.upsert_brain_entry("payment-research", "The payment flow uses Stripe for billing.", tags=["payment"])
+        qdrant.upsert_brain_entry("auth-research", "JWT tokens are verified in middleware.", tags=["auth"])
+        results = qdrant.search_brain("payment processing and billing", limit=2)
+        assert len(results) >= 1
+        assert results[0]["key"] == "payment-research"
+
+    def test_tag_filter_on_list(self, qdrant: QdrantManager):
+        qdrant.upsert_brain_entry("a", "alpha content", tags=["sprint-1"])
+        qdrant.upsert_brain_entry("b", "beta content", tags=["sprint-2"])
+        entries = qdrant.list_brain_entries(tag="sprint-1")
+        assert len(entries) == 1
+        assert entries[0]["key"] == "a"
+
+    def test_list_all_entries(self, qdrant: QdrantManager):
+        qdrant.upsert_brain_entry("x", "x content")
+        qdrant.upsert_brain_entry("y", "y content")
+        entries = qdrant.list_brain_entries()
+        assert len(entries) == 2
+
+    def test_delete_entry(self, qdrant: QdrantManager):
+        qdrant.upsert_brain_entry("to-delete", "remove me")
+        qdrant.delete_brain_entry("to-delete")
+        results = qdrant.search_brain(key="to-delete")
+        assert results == []
+
+    def test_key_not_found_returns_empty(self, qdrant: QdrantManager):
+        results = qdrant.search_brain(key="nonexistent-key")
+        assert results == []
+
+    def test_stats_counts_brain(self, qdrant: QdrantManager):
+        qdrant.upsert_brain_entry("stat-key", "some content")
+        stats = qdrant.get_stats()
+        assert stats["brain"] == 1
 
 
 @requires_qdrant

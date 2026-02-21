@@ -27,6 +27,7 @@ class IndexResult:
     nodes_extracted: int = 0
     edges_extracted: int = 0
     nodes_indexed: int = 0
+    nodes_enriched: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -35,6 +36,8 @@ def index_codebase(
     *,
     qdrant: QdrantManager | None = None,
     store_in_qdrant: bool = True,
+    enrich: bool = False,
+    progress_callback=None,
 ) -> tuple[IndexResult, list[Node], list[Edge]]:
     """Run the full code indexing pipeline.
 
@@ -42,6 +45,8 @@ def index_codebase(
         config: Hammy configuration.
         qdrant: Optional QdrantManager instance (created from config if None).
         store_in_qdrant: Whether to store results in Qdrant.
+        enrich: Whether to run LLM enrichment after indexing.
+        progress_callback: Optional fn(completed, total) for enrichment progress.
 
     Returns:
         Tuple of (result stats, all nodes, all edges).
@@ -84,5 +89,23 @@ def index_codebase(
             qdrant = QdrantManager(config.qdrant)
         qdrant.ensure_collections()
         result.nodes_indexed = qdrant.upsert_nodes(all_nodes)
+
+    if enrich and all_nodes:
+        from hammy.indexer.enricher import enrich_nodes
+
+        enriched_count, enrich_errors = enrich_nodes(
+            all_nodes,
+            project_root,
+            config.enrichment,
+            progress_callback=progress_callback,
+        )
+        result.nodes_enriched = enriched_count
+        result.errors.extend(enrich_errors)
+
+        # Re-upsert with enriched summaries so embeddings reflect the new text
+        if store_in_qdrant and enriched_count > 0:
+            if qdrant is None:
+                qdrant = QdrantManager(config.qdrant)
+            qdrant.upsert_nodes(all_nodes)
 
     return result, all_nodes, all_edges

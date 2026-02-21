@@ -80,9 +80,15 @@ def index(
         "--no-commits",
         help="Skip commit history indexing.",
     ),
+    enrich: bool = typer.Option(
+        False,
+        "--enrich",
+        help="Generate LLM summaries for all symbols after indexing (requires API key).",
+    ),
 ) -> None:
     """Index a codebase — parse files, extract symbols, store in Qdrant."""
     from dotenv import load_dotenv
+    from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
 
     from hammy.config import HammyConfig
     from hammy.indexer.code_indexer import index_codebase
@@ -92,6 +98,10 @@ def index(
     path = path.resolve()
     load_dotenv(path / ".env")
     config = HammyConfig.load(path)
+
+    # --enrich overrides config.enrichment.enabled
+    if enrich:
+        config.enrichment.enabled = True
 
     qdrant = None
     if not no_qdrant:
@@ -108,6 +118,7 @@ def index(
             config,
             qdrant=qdrant,
             store_in_qdrant=qdrant is not None,
+            enrich=False,  # Enrichment handled below with progress display
         )
 
     # Display results
@@ -125,6 +136,49 @@ def index(
         console.print(f"\n[yellow]Errors ({len(result.errors)}):[/yellow]")
         for err in result.errors[:10]:
             console.print(f"  - {err}")
+
+    # Enrichment with live progress bar
+    if config.enrichment.enabled and nodes:
+        from hammy.indexer.enricher import _ENRICHABLE_TYPES, enrich_nodes
+
+        candidates = [
+            n for n in nodes
+            if n.type in _ENRICHABLE_TYPES
+            and not (config.enrichment.skip_if_summary and n.summary)
+        ]
+        if config.enrichment.max_symbols > 0:
+            candidates = candidates[: config.enrichment.max_symbols]
+
+        total = len(candidates)
+        console.print(f"\n[bold blue]Enriching {total} symbols with LLM summaries...[/bold blue]")
+        console.print(f"  Model: {config.enrichment.model}  |  Batch size: {config.enrichment.batch_size}\n")
+
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Generating summaries", total=total)
+
+            def _on_progress(completed: int, _total: int) -> None:
+                progress.update(task, completed=completed)
+
+            enriched_count, enrich_errors = enrich_nodes(
+                nodes, path, config.enrichment, progress_callback=_on_progress
+            )
+
+        console.print(f"[green]Enriched {enriched_count} symbols.[/green]")
+        if enrich_errors:
+            console.print(f"[yellow]Enrichment errors ({len(enrich_errors)}):[/yellow]")
+            for err in enrich_errors[:5]:
+                console.print(f"  - {err}")
+
+        # Re-upsert enriched nodes so embeddings reflect new summaries
+        if qdrant is not None and enriched_count > 0:
+            with console.status("[bold blue]Re-indexing enriched symbols..."):
+                qdrant.upsert_nodes(nodes)
+            console.print("[green]Qdrant updated with enriched embeddings.[/green]")
 
     # Index commits
     if not no_commits:

@@ -41,6 +41,17 @@ class VCSConfig(BaseModel):
     churn_window_days: int = 90
 
 
+class EnrichmentConfig(BaseModel):
+    """Settings for LLM-powered symbol summarization."""
+
+    enabled: bool = False
+    provider: str = "anthropic"
+    model: str = "claude-haiku-4-5-20251001"
+    batch_size: int = 10
+    skip_if_summary: bool = True
+    max_symbols: int = 0  # 0 = no limit
+
+
 class ProjectConfig(BaseModel):
     """Top-level project settings."""
 
@@ -56,6 +67,7 @@ class HammyConfig(BaseSettings):
     parsing: ParsingConfig = Field(default_factory=ParsingConfig)
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
     vcs: VCSConfig = Field(default_factory=VCSConfig)
+    enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
 
     @classmethod
     def from_yaml(cls, path: Path) -> "HammyConfig":

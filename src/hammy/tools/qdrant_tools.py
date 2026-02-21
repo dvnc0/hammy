@@ -6,6 +6,8 @@ for both code symbols and commit messages.
 
 from __future__ import annotations
 
+import hashlib
+from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -29,6 +31,7 @@ class QdrantManager:
 
     CODES_COLLECTION = "code_symbols"
     COMMITS_COLLECTION = "commits"
+    BRAIN_COLLECTION = "brain"
     BATCH_SIZE = 500
 
     def __init__(self, config: QdrantConfig | None = None):
@@ -45,7 +48,7 @@ class QdrantManager:
 
     def ensure_collections(self) -> None:
         """Create collections if they don't exist."""
-        for base in (self.CODES_COLLECTION, self.COMMITS_COLLECTION):
+        for base in (self.CODES_COLLECTION, self.COMMITS_COLLECTION, self.BRAIN_COLLECTION):
             name = self._collection_name(base)
             if not self._client.collection_exists(name):
                 self._client.create_collection(
@@ -58,7 +61,7 @@ class QdrantManager:
 
     def delete_collections(self) -> None:
         """Delete all Hammy collections."""
-        for base in (self.CODES_COLLECTION, self.COMMITS_COLLECTION):
+        for base in (self.CODES_COLLECTION, self.COMMITS_COLLECTION, self.BRAIN_COLLECTION):
             name = self._collection_name(base)
             if self._client.collection_exists(name):
                 self._client.delete_collection(name)
@@ -95,9 +98,12 @@ class QdrantManager:
         embeddings = self.embed(texts)
 
         points = []
-        for i, (node, embedding) in enumerate(zip(nodes, embeddings)):
+        for node, embedding in zip(nodes, embeddings):
+            # Stable ID derived from node.id so partial re-upserts (e.g. after
+            # enrichment) overwrite the correct point rather than a positional one.
+            point_id = int(hashlib.md5(node.id.encode()).hexdigest(), 16) % (2**53)
             points.append(PointStruct(
-                id=i,
+                id=point_id,
                 vector=embedding,
                 payload={
                     "node_id": node.id,
@@ -313,10 +319,145 @@ class QdrantManager:
             for r in results.points
         ]
 
+    # --- Brain (working memory) ---
+
+    def _brain_point_id(self, key: str) -> int:
+        """Deterministic point ID from a key string."""
+        return int(hashlib.md5(key.encode()).hexdigest(), 16) % (2**53)
+
+    def upsert_brain_entry(
+        self,
+        key: str,
+        content: str,
+        tags: list[str] | None = None,
+        source_files: list[str] | None = None,
+    ) -> None:
+        """Store or overwrite a brain entry.
+
+        The key acts as a stable identifier — upserting with the same key
+        replaces the previous entry. Content is embedded for semantic recall.
+
+        Args:
+            key: Unique identifier for this entry (e.g. 'payment-flow-research').
+            content: The discovered information to store.
+            tags: Optional labels for grouping/filtering (e.g. ['payment', 'sprint-42']).
+            source_files: Optional file paths this entry relates to.
+        """
+        tags = tags or []
+        source_files = source_files or []
+        text_to_embed = f"{key}: {content}"
+        embedding = self.embed([text_to_embed])[0]
+
+        collection = self._collection_name(self.BRAIN_COLLECTION)
+        self._client.upsert(
+            collection_name=collection,
+            points=[
+                PointStruct(
+                    id=self._brain_point_id(key),
+                    vector=embedding,
+                    payload={
+                        "key": key,
+                        "content": content,
+                        "tags": tags,
+                        "source_files": source_files,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+            ],
+        )
+
+    def search_brain(
+        self,
+        query: str = "",
+        *,
+        key: str = "",
+        tag: str = "",
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Retrieve brain entries by exact key, tag filter, or semantic query.
+
+        Args:
+            query: Semantic search text (used when key is not provided).
+            key: Exact key for direct lookup (takes priority over query).
+            tag: Optional tag to restrict results.
+            limit: Max results for semantic search.
+        """
+        collection = self._collection_name(self.BRAIN_COLLECTION)
+
+        if key:
+            # Exact key lookup via payload filter
+            results, _ = self._client.scroll(
+                collection_name=collection,
+                scroll_filter=Filter(
+                    must=[FieldCondition(key="key", match=MatchValue(value=key))]
+                ),
+                limit=1,
+                with_payload=True,
+            )
+            return [r.payload for r in results]
+
+        # Semantic search with optional tag filter
+        if not query:
+            return []
+
+        conditions = []
+        if tag:
+            conditions.append(
+                FieldCondition(key="tags", match=MatchValue(value=tag))
+            )
+
+        query_embedding = self.embed([query])[0]
+        results = self._client.query_points(
+            collection_name=collection,
+            query=query_embedding,
+            query_filter=Filter(must=conditions) if conditions else None,
+            limit=limit,
+        )
+        return [{"score": r.score, **r.payload} for r in results.points]
+
+    def list_brain_entries(self, tag: str = "") -> list[dict[str, Any]]:
+        """List all brain entries, optionally filtered by tag.
+
+        Args:
+            tag: Optional tag to restrict results.
+        """
+        collection = self._collection_name(self.BRAIN_COLLECTION)
+
+        conditions = []
+        if tag:
+            conditions.append(
+                FieldCondition(key="tags", match=MatchValue(value=tag))
+            )
+
+        results, _ = self._client.scroll(
+            collection_name=collection,
+            scroll_filter=Filter(must=conditions) if conditions else None,
+            limit=200,
+            with_payload=True,
+        )
+        # Sort newest first
+        entries = [r.payload for r in results]
+        entries.sort(key=lambda e: e.get("created_at", ""), reverse=True)
+        return entries
+
+    def delete_brain_entry(self, key: str) -> None:
+        """Delete a brain entry by key.
+
+        Args:
+            key: The exact key to delete.
+        """
+        from qdrant_client.models import PointIdsList
+
+        collection = self._collection_name(self.BRAIN_COLLECTION)
+        self._client.delete(
+            collection_name=collection,
+            points_selector=PointIdsList(points=[self._brain_point_id(key)]),
+        )
+
     def get_stats(self) -> dict[str, int]:
         """Get collection statistics."""
         stats = {}
-        for base in (self.CODES_COLLECTION, self.COMMITS_COLLECTION):
+        for base in (self.CODES_COLLECTION, self.COMMITS_COLLECTION, self.BRAIN_COLLECTION):
             name = self._collection_name(base)
             if self._client.collection_exists(name):
                 info = self._client.get_collection(name)

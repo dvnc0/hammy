@@ -340,6 +340,124 @@ def create_mcp_server(
         return "\n".join(lines)
 
     @mcp.tool(
+        name="impact_analysis",
+        description=(
+            "Analyse the blast radius of changing a function or method. "
+            "Traverses the call graph to show what code depends on a symbol (callers) "
+            "or what the symbol depends on (callees), up to N hops deep. "
+            "Use direction='callers' (default) to answer 'if I change X, what breaks?', "
+            "direction='callees' to see what X depends on, or direction='both' for full neighbourhood."
+        ),
+    )
+    def impact_analysis(
+        symbol_name: str,
+        depth: int = 3,
+        direction: str = "callers",
+    ) -> str:
+        """Analyse the call-graph blast radius of a symbol.
+
+        Args:
+            symbol_name: Exact name of the function/method to analyse.
+            depth: How many hops to traverse (1=direct only, default 3, max 6).
+            direction: 'callers', 'callees', or 'both'.
+        """
+        depth = max(1, min(depth, 6))
+        pattern = re.compile(r"\b" + re.escape(symbol_name) + r"\b", re.IGNORECASE)
+        node_index = {n.id: n for n in all_nodes}
+        name_index: dict[str, list[Node]] = {}
+        for n in all_nodes:
+            name_index.setdefault(n.name.lower(), []).append(n)
+
+        call_edges = [e for e in all_edges if e.relation == RelationType.CALLS]
+
+        def _find_callers(names: set[str], visited: set[str]) -> list[tuple[Node, str]]:
+            found = []
+            pats = {n: re.compile(r"\b" + re.escape(n) + r"\b", re.IGNORECASE) for n in names}
+            for edge in call_edges:
+                ctx = edge.metadata.context or ""
+                for callee_name, p in pats.items():
+                    if p.search(ctx):
+                        caller = node_index.get(edge.source)
+                        if caller and caller.id not in visited:
+                            found.append((caller, callee_name))
+                            break
+            return found
+
+        def _find_callees(node_ids: set[str], visited: set[str]) -> list[tuple[Node, str]]:
+            found = []
+            for edge in call_edges:
+                if edge.source not in node_ids:
+                    continue
+                ctx = edge.metadata.context or ""
+                callee_name = re.split(r"[:\.\s]", ctx)[-1].strip() if ctx else ""
+                if not callee_name:
+                    continue
+                for n in name_index.get(callee_name.lower(), []):
+                    if n.id not in visited:
+                        found.append((n, ctx))
+                        break
+            return found
+
+        lines: list[str] = []
+        hop = 0
+
+        if direction in ("callers", "both"):
+            lines.append(f"=== Callers of '{symbol_name}' (what breaks if it changes) ===")
+            visited: set[str] = set()
+            current_names = {symbol_name}
+            total_found = 0
+            for hop in range(1, depth + 1):
+                results = _find_callers(current_names, visited)
+                if not results:
+                    break
+                lines.append(f"\nHop {hop}:")
+                next_names: set[str] = set()
+                for caller, callee in sorted(results, key=lambda x: x[0].loc.file):
+                    visited.add(caller.id)
+                    lines.append(
+                        f"  {'  ' * (hop - 1)}{caller.type.value}: {caller.name} "
+                        f"({caller.loc.file}:{caller.loc.lines[0]}) calls {callee}"
+                    )
+                    next_names.add(caller.name)
+                    total_found += 1
+                current_names = next_names
+            if total_found == 0:
+                lines.append(f"  No callers found for '{symbol_name}'.")
+            else:
+                lines.append(f"\nTotal callers found: {total_found} across {hop} hop(s).")
+
+        if direction in ("callees", "both"):
+            lines.append(f"\n=== Callees of '{symbol_name}' (what it depends on) ===")
+            start_nodes = name_index.get(symbol_name.lower(), [])
+            if not start_nodes:
+                lines.append(f"  Definition of '{symbol_name}' not found in index.")
+            else:
+                visited_c: set[str] = {n.id for n in start_nodes}
+                current_ids = visited_c.copy()
+                total_c = 0
+                for hop in range(1, depth + 1):
+                    results_c = _find_callees(current_ids, visited_c)
+                    if not results_c:
+                        break
+                    lines.append(f"\nHop {hop}:")
+                    next_ids: set[str] = set()
+                    for callee, ctx in sorted(results_c, key=lambda x: x[0].loc.file):
+                        visited_c.add(callee.id)
+                        next_ids.add(callee.id)
+                        lines.append(
+                            f"  {'  ' * (hop - 1)}{callee.type.value}: {callee.name} "
+                            f"({callee.loc.file}:{callee.loc.lines[0]})"
+                        )
+                        total_c += 1
+                    current_ids = next_ids
+                if total_c == 0:
+                    lines.append(f"  No known callees found for '{symbol_name}'.")
+                else:
+                    lines.append(f"\nTotal callees found: {total_c} across {hop} hop(s).")
+
+        return "\n".join(lines) if lines else f"No call graph data found for '{symbol_name}'."
+
+    @mcp.tool(
         name="find_bridges",
         description=(
             "Find cross-language connections (e.g., JS fetch calls matching PHP routes). "
@@ -404,15 +522,19 @@ def create_mcp_server(
         description=(
             "Re-index the codebase to pick up changes made since the server started. "
             "Use this after modifying files to refresh search results. "
-            "Set update_qdrant=true to also update semantic search embeddings (slower)."
+            "Set update_qdrant=true to also update semantic search embeddings (slower). "
+            "Set enrich=true to generate LLM summaries for newly indexed symbols "
+            "(requires ANTHROPIC_API_KEY and update_qdrant=true)."
         ),
     )
-    def reindex(update_qdrant: bool = False) -> str:
+    def reindex(update_qdrant: bool = False, enrich: bool = False) -> str:
         """Re-index the codebase.
 
         Args:
             update_qdrant: If true, also update Qdrant embeddings (slower).
                           If false, only refreshes the in-memory symbol index.
+            enrich: If true, generate LLM summaries for symbols after indexing.
+                   Requires update_qdrant=true and a configured API key.
         """
         store = update_qdrant and qdrant is not None
 
@@ -421,8 +543,12 @@ def create_mcp_server(
         else:
             qdrant_note = ""
 
+        run_enrich = enrich and store
+        if enrich and not store:
+            qdrant_note += " (enrich requires update_qdrant=true)"
+
         result, new_nodes, new_edges = index_codebase(
-            config, qdrant=qdrant, store_in_qdrant=store
+            config, qdrant=qdrant, store_in_qdrant=store, enrich=run_enrich
         )
 
         # Update in-place so all tools see the new data
@@ -441,6 +567,9 @@ def create_mcp_server(
 
         if store:
             lines.append(f"  Symbols indexed in Qdrant: {result.nodes_indexed}")
+
+        if run_enrich:
+            lines.append(f"  Symbols enriched with LLM summaries: {result.nodes_enriched}")
 
         if result.errors:
             lines.append(f"  Errors: {len(result.errors)}")
@@ -587,6 +716,121 @@ def create_mcp_server(
                 )
                 if r.get("summary"):
                     lines.append(f"  {r['summary']}")
+
+            return "\n".join(lines)
+
+        @mcp.tool(
+            name="store_context",
+            description=(
+                "Store a research finding or discovered context in the brain (persistent memory). "
+                "Each entry has a key for direct retrieval and is semantically indexed so related "
+                "findings can be discovered by concept. Upserting the same key overwrites the "
+                "previous entry. Use tags to group related findings (e.g. task name, sprint). "
+                "Sub-agents can retrieve this by key using recall_context."
+            ),
+        )
+        def store_context(
+            key: str,
+            content: str,
+            tags: str = "",
+            source_files: str = "",
+        ) -> str:
+            """Store a finding in the brain.
+
+            Args:
+                key: Unique identifier for this entry (e.g. 'payment-flow-research').
+                content: The discovered information to store.
+                tags: Comma-separated labels for grouping (e.g. 'payment,sprint-42').
+                source_files: Comma-separated file paths this entry relates to.
+            """
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+            file_list = [f.strip() for f in source_files.split(",") if f.strip()] if source_files else []
+
+            qdrant.upsert_brain_entry(key, content, tags=tag_list, source_files=file_list)
+
+            tag_note = f" [tags: {', '.join(tag_list)}]" if tag_list else ""
+            return f"Stored '{key}'{tag_note}. Retrieve with: recall_context(key='{key}')"
+
+        @mcp.tool(
+            name="recall_context",
+            description=(
+                "Retrieve stored research from the brain. "
+                "Fetch by exact key for direct lookup, or use a natural language query "
+                "to find semantically related findings. Optionally filter by tag. "
+                "Use after store_context to hand off context to sub-agents or resume work."
+            ),
+        )
+        def recall_context(
+            query: str = "",
+            key: str = "",
+            tag: str = "",
+            limit: int = 5,
+        ) -> str:
+            """Retrieve brain entries by key or semantic query.
+
+            Args:
+                query: Natural language query to find related findings.
+                key: Exact key for direct lookup (takes priority over query).
+                tag: Optional tag to restrict results.
+                limit: Max results for semantic search.
+            """
+            if not query and not key:
+                return "Provide either a key (exact lookup) or a query (semantic search)."
+
+            results = qdrant.search_brain(query, key=key, tag=tag, limit=min(limit, 10))
+
+            if not results:
+                if key:
+                    return f"No brain entry found for key '{key}'."
+                return f"No brain entries found matching '{query}'."
+
+            lines = []
+            for r in results:
+                score = r.get("score")
+                header = f"[{r['key']}]"
+                if score is not None:
+                    header += f" (relevance: {score:.2f})"
+                if r.get("tags"):
+                    header += f" tags: {', '.join(r['tags'])}"
+                lines.append(header)
+                lines.append(r["content"])
+                if r.get("source_files"):
+                    lines.append(f"  files: {', '.join(r['source_files'])}")
+                lines.append(f"  stored: {r.get('created_at', '?')[:19]}")
+                lines.append("")
+
+            return "\n".join(lines).strip()
+
+        @mcp.tool(
+            name="list_context",
+            description=(
+                "List all keys and summaries stored in the brain. "
+                "Use to see what research has been accumulated, optionally filtered by tag. "
+                "Then use recall_context(key=...) to fetch the full content of any entry."
+            ),
+        )
+        def list_context(tag: str = "") -> str:
+            """List stored brain entries.
+
+            Args:
+                tag: Optional tag to restrict results.
+            """
+            entries = qdrant.list_brain_entries(tag=tag)
+
+            if not entries:
+                note = f" with tag '{tag}'" if tag else ""
+                return f"No brain entries{note}. Use store_context to save findings."
+
+            lines = [f"{len(entries)} brain {'entry' if len(entries) == 1 else 'entries'}:\n"]
+            for e in entries:
+                created = e.get("created_at", "")[:10]
+                tag_note = f" [{', '.join(e['tags'])}]" if e.get("tags") else ""
+                # First line of content as summary
+                summary = e["content"].splitlines()[0][:80]
+                if len(e["content"]) > 80:
+                    summary += "…"
+                lines.append(f"  {e['key']}{tag_note}  ({created})")
+                lines.append(f"    {summary}")
 
             return "\n".join(lines)
 
