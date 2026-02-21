@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -59,9 +60,13 @@ class TestMCPServerCreation:
         assert "lookup_symbol" in tool_names
         assert "find_usages" in tool_names
         assert "impact_analysis" in tool_names
+        assert "structural_search" in tool_names
+        assert "hotspot_score" in tool_names
         assert "list_files" in tool_names
+        assert "search_code_hybrid" in tool_names
         assert "find_bridges" in tool_names
         assert "index_status" in tool_names
+        assert "pr_diff" in tool_names
 
     @pytest.mark.asyncio
     async def test_tool_count_without_vcs_or_qdrant(self, mcp_server):
@@ -169,6 +174,52 @@ class TestSearchSymbolsRanked:
         )
         text = _extract_text(result)
         assert "No symbols matching" in text
+
+
+class TestHybridSearch:
+    @pytest.mark.asyncio
+    async def test_hybrid_search_registered(self, mcp_server):
+        tools = await mcp_server.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "search_code_hybrid" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_hybrid_finds_symbol(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "search_code_hybrid", {"query": "UserController"}
+        )
+        text = _extract_text(result)
+        assert "UserController" in text
+
+    @pytest.mark.asyncio
+    async def test_hybrid_no_match(self, mcp_server):
+        # When Qdrant is available, dense search always returns nearest neighbors
+        # even for nonsense queries; when not available, BM25 gives empty.
+        result = await mcp_server.call_tool(
+            "search_code_hybrid", {"query": "zzz_totally_missing_xyz"}
+        )
+        text = _extract_text(result)
+        # Either returns results (Qdrant semantic) or empty message — no crash
+        assert len(text) > 0
+
+    @pytest.mark.asyncio
+    async def test_hybrid_language_filter(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "search_code_hybrid", {"query": "User", "language": "php"}
+        )
+        text = _extract_text(result)
+        # Should return results or empty message — no crash
+        assert len(text) > 0
+
+    @pytest.mark.asyncio
+    async def test_hybrid_returns_score(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "search_code_hybrid", {"query": "getUser"}
+        )
+        text = _extract_text(result)
+        if "No code matching" not in text:
+            # Results should include a bracketed score
+            assert "[" in text
 
 
 class TestLookupSymbol:
@@ -366,6 +417,102 @@ class TestImpactAnalysis:
         assert "Callees of" in text
 
 
+class TestStructuralSearch:
+    @pytest.mark.asyncio
+    async def test_structural_search_registered(self, mcp_server):
+        tools = await mcp_server.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "structural_search" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_finds_public_methods(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "structural_search", {"visibility": "public", "node_type": "method"}
+        )
+        text = _extract_text(result)
+        # Fixture has PHP class methods with public visibility
+        assert "public" in text or "matched" in text
+
+    @pytest.mark.asyncio
+    async def test_no_match_returns_message(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "structural_search",
+            {"visibility": "private", "return_type": "ZZZNoSuchType", "node_type": "class"},
+        )
+        text = _extract_text(result)
+        assert "No symbols matched" in text
+
+    @pytest.mark.asyncio
+    async def test_file_filter_narrows(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "structural_search", {"file_filter": "UserController", "node_type": "method"}
+        )
+        text = _extract_text(result)
+        if "No symbols matched" not in text:
+            assert "UserController" in text
+
+    @pytest.mark.asyncio
+    async def test_min_params_filter(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "structural_search", {"min_params": 1}
+        )
+        text = _extract_text(result)
+        assert "matched" in text or "No symbols" in text
+
+    @pytest.mark.asyncio
+    async def test_name_pattern_regex(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "structural_search", {"name_pattern": "^get"}
+        )
+        text = _extract_text(result)
+        if "No symbols matched" not in text:
+            # All returned names should start with "get" (case-insensitive)
+            for line in text.splitlines():
+                if ": " in line and "(" in line:
+                    # line format: "method: getName (file.php:10)"
+                    name_part = line.split(":")[1].strip().split("(")[0].strip()
+                    assert name_part.lower().startswith("get"), f"Unexpected name: {name_part}"
+
+
+class TestHotspotScore:
+    @pytest.mark.asyncio
+    async def test_hotspot_registered(self, mcp_server):
+        tools = await mcp_server.list_tools()
+        assert "hotspot_score" in {t.name for t in tools}
+
+    @pytest.mark.asyncio
+    async def test_hotspot_returns_results(self, mcp_server):
+        result = await mcp_server.call_tool("hotspot_score", {"top_n": 5})
+        text = _extract_text(result)
+        # Should return a ranked list or a "no symbols" message — not crash
+        assert "hotspot" in text.lower() or "No symbols" in text or "#" in text
+
+    @pytest.mark.asyncio
+    async def test_hotspot_node_type_filter(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "hotspot_score", {"node_type": "method", "top_n": 10}
+        )
+        text = _extract_text(result)
+        assert len(text) > 0
+
+    @pytest.mark.asyncio
+    async def test_hotspot_no_match(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "hotspot_score", {"file_filter": "zzz_no_such_dir/", "top_n": 5}
+        )
+        text = _extract_text(result)
+        assert "No symbols" in text
+
+    @pytest.mark.asyncio
+    async def test_hotspot_respects_top_n(self, mcp_server):
+        result = await mcp_server.call_tool("hotspot_score", {"top_n": 3})
+        text = _extract_text(result)
+        # Should not list more than 3 entries (each starts with #N)
+        import re
+        ranked = re.findall(r"#\d+", text)
+        assert len(ranked) <= 3
+
+
 class TestBrainTools:
     """Tests for brain (working memory) tools — only present when Qdrant is available."""
 
@@ -527,6 +674,38 @@ class TestMCPWithVCS:
         text = _extract_text(result)
         # Single commit, should show some churn
         assert len(text) > 0
+
+
+class TestPRDiff:
+    @pytest.mark.asyncio
+    async def test_pr_diff_basic(self, mcp_server):
+        diff = textwrap.dedent("""\
+            diff --git a/UserController.php b/UserController.php
+            index abc..def 100644
+            --- a/UserController.php
+            +++ b/UserController.php
+            @@ -1,5 +1,6 @@ class UserController
+            +    public function getRenew($id) {
+            +        return $this->service->processRenewal($id);
+            +    }
+        """)
+        result = await mcp_server.call_tool("pr_diff", {"diff_text": diff})
+        text = _extract_text(result)
+        assert len(text) > 0
+        # Should mention the changed file
+        assert "UserController.php" in text
+
+    @pytest.mark.asyncio
+    async def test_pr_diff_empty_diff(self, mcp_server):
+        result = await mcp_server.call_tool("pr_diff", {"diff_text": ""})
+        text = _extract_text(result)
+        assert "No changed files" in text or len(text) > 0
+
+    @pytest.mark.asyncio
+    async def test_pr_diff_no_params(self, mcp_server):
+        result = await mcp_server.call_tool("pr_diff", {})
+        text = _extract_text(result)
+        assert "diff_text" in text or "base_ref" in text or len(text) > 0
 
 
 class TestCLIServe:

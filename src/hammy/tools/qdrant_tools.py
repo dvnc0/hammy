@@ -123,6 +123,25 @@ class QdrantManager:
             self._client.upsert(collection_name=collection, points=points[i : i + self.BATCH_SIZE])
         return len(points)
 
+    def delete_nodes_by_file(self, file_path: str) -> int:
+        """Delete all code symbol nodes belonging to a specific file.
+
+        Returns the number of points deleted (approximate — Qdrant count before delete).
+        """
+        collection = self._collection_name(self.CODES_COLLECTION)
+        file_filter = Filter(
+            must=[FieldCondition(key="file", match=MatchValue(value=file_path))]
+        )
+        # Count first so we can report how many were removed
+        count_result = self._client.count(collection_name=collection, count_filter=file_filter)
+        deleted = count_result.count
+        if deleted > 0:
+            self._client.delete(
+                collection_name=collection,
+                points_selector=file_filter,
+            )
+        return deleted
+
     def upsert_commits(
         self,
         commits: list[dict[str, Any]],

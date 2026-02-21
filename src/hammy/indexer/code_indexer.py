@@ -109,3 +109,43 @@ def index_codebase(
             qdrant.upsert_nodes(all_nodes)
 
     return result, all_nodes, all_edges
+
+
+def index_files(
+    file_paths: list[Path],
+    config: HammyConfig,
+    project_root: Path,
+) -> tuple[list[Node], list[Edge], list[str]]:
+    """Parse and index a specific set of files (for incremental / watch-mode updates).
+
+    Does NOT write to Qdrant — caller handles that.
+
+    Args:
+        file_paths: Absolute paths to the files to index.
+        config: Hammy configuration (used for language settings).
+        project_root: Project root for computing relative paths.
+
+    Returns:
+        Tuple of (nodes, edges, errors).
+    """
+    parser_factory = ParserFactory(config.parsing.languages)
+    nodes: list[Node] = []
+    edges: list[Edge] = []
+    errors: list[str] = []
+
+    for path in file_paths:
+        if not path.exists():
+            continue
+        parsed = parser_factory.parse_file(path)
+        if parsed is None:
+            continue
+        tree, language = parsed
+        try:
+            rel_path = str(path.relative_to(project_root))
+            file_nodes, file_edges = extract_symbols(tree, language, rel_path)
+            nodes.extend(file_nodes)
+            edges.extend(file_edges)
+        except Exception as e:
+            errors.append(f"{path}: {e}")
+
+    return nodes, edges, errors

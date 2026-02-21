@@ -1,81 +1,106 @@
 # Hammy
 
-> A Codebase Intelligence Engine for AI coding agents
+> Codebase Intelligence Engine — deep structural and historical context for AI coding agents
 
-**STATUS: Work in Progress**
+Hammy is a specialized intelligence layer that gives AI coding agents a high-fidelity "brain" for understanding complex, multi-language codebases. It parses source code into a queryable property graph, tracks version control history, and exposes everything through an MCP server and CrewAI agent tools.
 
-Hammy is a specialized intelligence asset designed to provide deep structural and historical context about codebases to AI coding agents. It operates as a high-fidelity "brain" that external tools (IDE extensions, CLIs, MCP clients) can query to understand the *How*, *Where*, and *Why* of complex, multi-language codebases.
+## Features
 
-## Overview
-
-Hammy uses a multi-agent architecture built on CrewAI to analyze codebases through multiple lenses:
-
-- **The Explorer**: Maps code structure using Tree-sitter AST parsing, tracking dependencies and cross-language bridges
-- **The Historian**: Analyzes version control history (Git/Mercurial) to provide temporal context, authorship, and change patterns
-- **The Dispatcher**: Coordinates agents, breaks down queries, and synthesizes comprehensive "context packs"
-
-### Key Features
-
-- **Multi-language AST parsing**: Currently supports PHP and JavaScript with extensible architecture for additional languages
-- **Cross-language bridge detection**: Links frontend API calls to backend endpoints across language boundaries
-- **Version control intelligence**: Extracts commit history, blame information, and code churn metrics
-- **Vector search**: Semantic code search powered by Qdrant vector database
-- **Smart ignore system**: Four-layer ignore system (defaults, .gitignore, .hgignore, .hammyignore) prevents indexing irrelevant files
-- **CLI interface**: Simple commands to index codebases and query for insights
+- **Multi-language AST parsing** — PHP, JavaScript, TypeScript, Python, Go (Tree-sitter based)
+- **Cross-language bridge detection** — links `fetch('/api/users')` in JS to `#[Route('/api/users')]` in PHP
+- **Call graph tracking** — indexes function call sites so you can find all callers of any symbol
+- **Semantic + hybrid search** — dense vector search (Qdrant) combined with BM25 via Reciprocal Rank Fusion
+- **Structural search** — filter symbols by visibility, async, param count, return type, file, complexity
+- **Impact analysis** — N-hop call graph traversal to find the blast radius of any change
+- **PR diff analysis** — parse a unified diff, extract changed symbols, compute their blast radius
+- **Hotspot scoring** — rank symbols by `log(callers) × log(churn)` to surface high-risk code
+- **LLM enrichment** — auto-generate summaries for every indexed function and class
+- **Brain / memory layer** — agents can store and recall context across sessions in Qdrant
+- **Watch mode** — incremental re-indexing on file change (inotify/FSEvents via watchfiles)
+- **VCS integration** — Git log, blame, churn metrics; Mercurial scaffolded
+- **MCP server** — expose all tools over the Model Context Protocol for IDE/LLM client use
+- **Smart ignore system** — four-layer filtering: defaults → .gitignore → .hgignore → .hammyignore
 
 ## Architecture
 
-Hammy represents codebases as a property graph using a Universal JSON Schema (UJS):
+Hammy represents codebases as a property graph:
 
-- **Nodes**: Represent code entities (files, classes, functions, interfaces)
-- **Edges**: Represent relationships (calls, imports, bridges between languages)
-- **Metadata**: Includes line numbers, complexity scores, and historical heat
+- **Nodes** — files, classes, functions, methods, endpoints
+- **Edges** — calls, imports, bridges between languages, API endpoint links
+- **Metadata** — line numbers, complexity, visibility, churn rate, LLM summaries
 
-This unified representation enables AI agents to "walk" between a JavaScript frontend and PHP backend as if they were a single codebase.
+A multi-agent system built on CrewAI answers queries by coordinating:
+
+- **The Explorer** — maps code structure, searches symbols, traces call graphs
+- **The Historian** — analyzes VCS history for authorship, churn, and temporal patterns
+- **The Dispatcher** — coordinates agents and synthesizes context packs
 
 ## Installation
 
-Hammy uses [uv](https://github.com/astral-sh/uv) for dependency management.
+Requires [uv](https://github.com/astral-sh/uv) and Docker (for Qdrant).
 
 ```bash
-# Clone the repository
 git clone https://github.com/yourusername/hammy.git
 cd hammy
-
-# Install dependencies
 uv sync --extra dev
 
-# Start Qdrant vector database
+# Start Qdrant
 docker compose up -d
+
+# Install as a CLI tool
+uv tool install --editable .
 ```
 
 ## Quick Start
 
 ```bash
-# Initialize Hammy in your project
+# Initialize Hammy config in your project
 hammy init /path/to/your/project
 
-# Index your codebase
+# Index the codebase
 cd /path/to/your/project
 hammy index
 
-# Query the codebase
-hammy query "What does the UserController do?"
+# Query with the AI agent
+hammy query "Where is the payment processing logic and who calls it?"
 
-# Check index status
+# Check what was indexed
 hammy status
+
+# Start the MCP server (for IDE / LLM client integration)
+hammy serve
+
+# Watch for file changes and re-index incrementally
+hammy watch
 ```
 
+## MCP Tools
+
+When running `hammy serve`, all tools are available to any MCP client (Cursor, Claude Desktop, etc.):
+
+| Tool | Description |
+|---|---|
+| `ast_query` | Parse a file and return its full symbol tree |
+| `search_symbols` | Keyword search over symbol names |
+| `search_code_hybrid` | BM25 + dense hybrid search with RRF fusion |
+| `lookup_symbol` | Fetch full detail for a specific symbol by name |
+| `find_usages` | Find all call sites for a symbol name |
+| `impact_analysis` | N-hop caller/callee traversal for a symbol |
+| `structural_search` | Filter by visibility, async, param count, return type, complexity |
+| `hotspot_score` | Rank symbols by caller count × churn rate |
+| `pr_diff` | Parse a unified diff and compute blast radius of each changed symbol |
+| `find_bridges` | Find cross-language endpoint connections |
+| `list_files` | List indexed files with node counts |
+| `index_status` | Overview of total nodes, edges, and languages |
+| `git_log` | Recent commit history |
+| `git_blame` | Blame for a file |
+| `file_churn` | Commit frequency per file over a time window |
+| `search_commits` | Semantic search over commit messages |
+| `store_context` | Save agent context to memory (requires Qdrant) |
+| `recall_context` | Retrieve relevant saved context |
+| `list_context` | List all stored memory entries |
+
 ## Configuration
-
-Hammy uses YAML configuration files located in `config/`:
-
-- **hammy.yaml**: Project settings, parsing options, Qdrant connection, VCS limits
-- **agents.yaml**: CrewAI agent definitions (role, goal, backstory, LLM provider)
-- **tasks.yaml**: Agent task definitions and workflows
-- **.hammyignore**: Custom ignore patterns (gitignore syntax)
-
-### Example Configuration
 
 ```yaml
 # config/hammy.yaml
@@ -87,6 +112,9 @@ parsing:
   languages:
     - php
     - javascript
+    - typescript
+    - python
+    - go
   max_file_size_kb: 500
 
 qdrant:
@@ -99,95 +127,71 @@ vcs:
   churn_window_days: 90
 ```
 
-## Current Status
+`.hammyignore` accepts standard gitignore syntax and is merged with `.gitignore`/`.hgignore`.
 
-### Completed (Phases 0-6)
+## Use Cases
 
-- Project scaffolding with uv package management
-- Four-layer ignore system with .gitignore/.hgignore support
-- Tree-sitter based AST parsing for PHP and JavaScript
-- VCS integration (Git fully implemented, Mercurial scaffolded)
-- Qdrant vector database integration
-- CrewAI agent system with Explorer and Historian
-- Cross-language bridge detection
-- CLI interface with init, index, query, and status commands
-- 106 passing tests
+- *"Where is `getRenew` called and what breaks if I change it?"* → `find_usages` + `impact_analysis`
+- *"What are the riskiest files to touch in this PR?"* → `pr_diff` with blast radius + hotspot scores
+- *"What endpoints does this React component call?"* → `find_bridges` maps fetch → PHP Route
+- *"Who owns the payment logic and when was it last changed?"* → `git_blame` + `file_churn`
+- *"Find all async functions that take more than 3 parameters"* → `structural_search`
 
-### Planned (Phase 7+)
+## Project Structure
 
-- Model Context Protocol (MCP) server implementation
-- Additional language support (Python, TypeScript, Java, etc.)
-- Enhanced bridge detection strategies
-- IDE extension integrations
-- Performance optimizations for large codebases
-- Context pack caching and incremental updates
+```
+hammy/
+├── src/hammy/
+│   ├── cli.py              # Typer CLI (init, index, query, status, serve, watch)
+│   ├── config.py           # Pydantic settings loader
+│   ├── ignore.py           # Four-layer ignore system
+│   ├── watcher.py          # watchfiles-based incremental re-indexer
+│   ├── agents/             # CrewAI Explorer and Historian agents
+│   ├── core/               # Crew orchestration and context pack generation
+│   ├── indexer/            # File walking, parsing pipeline, incremental indexing
+│   ├── mcp/                # MCP server (mcp-python)
+│   ├── schema/             # Pydantic models (Node, Edge, ContextPack)
+│   └── tools/
+│       ├── languages/      # Tree-sitter extractors: php, js, ts, python, go
+│       ├── ast_tools.py    # AST query tool
+│       ├── bridge.py       # Cross-language bridge resolver
+│       ├── diff_analysis.py# PR diff parser and blast radius
+│       ├── hotspot.py      # Hotspot scoring
+│       ├── hybrid_search.py# BM25 + dense RRF fusion
+│       ├── parser.py       # ParserFactory dispatcher
+│       ├── qdrant_tools.py # Qdrant embed, upsert, search, delete
+│       └── vcs.py          # Git/Mercurial wrapper
+├── config/                 # Default configuration files
+├── tests/                  # 302 passing tests with fixtures
+└── docker-compose.yml      # Qdrant service
+```
 
 ## Development
 
-### Running Tests
-
 ```bash
-# Ensure Qdrant is running
-docker compose up -d
-
-# Run all tests
+# Run the full test suite (Qdrant must be running)
 uv run pytest
 
 # Run with coverage
 uv run pytest --cov=hammy --cov-report=term-missing
 
-# Run specific test file
+# Run a specific module
 uv run pytest tests/test_parser.py
 ```
-
-### Project Structure
-
-```
-hammy/
-├── src/hammy/
-│   ├── cli.py              # Typer CLI interface
-│   ├── config.py           # Pydantic Settings config loader
-│   ├── ignore.py           # Multi-layer ignore system
-│   ├── agents/             # CrewAI agent definitions
-│   ├── core/               # Crew orchestration and context packs
-│   ├── indexer/            # File walking and indexing pipelines
-│   ├── schema/             # Pydantic models (Node, Edge, ContextPack)
-│   └── tools/              # Tree-sitter, VCS, Qdrant, Bridge tools
-├── config/                 # Default configuration files
-├── tests/                  # Test suite with fixtures
-└── docker-compose.yml      # Qdrant service definition
-```
-
-## How It Works
-
-1. **Indexing**: Hammy walks your codebase respecting ignore patterns, parses files using Tree-sitter, and stores structured representations in Qdrant
-2. **VCS Analysis**: Commits, blame info, and churn metrics are extracted and indexed for temporal context
-3. **Bridge Detection**: Cross-language connections are identified (e.g., `fetch('/api/users')` linked to PHP `#[Route('/api/users')]`)
-4. **Query Processing**: The Dispatcher coordinates Explorer and Historian agents to answer questions about your codebase
-5. **Context Pack Generation**: Results are synthesized into Markdown documents optimized for LLM consumption
-
-## Use Cases
-
-- "Why does the user profile load so slowly?" → Finds the bottleneck and its change history
-- "What endpoints does this React component call?" → Maps frontend-to-backend connections
-- "Who owns the payment processing logic?" → Provides authorship and change patterns
-- "Where is the User type defined?" → Finds definitions across multiple languages
 
 ## Requirements
 
 - Python 3.11+
 - Docker (for Qdrant)
-- Git (for repository analysis)
-- LLM API access (configurable: OpenAI, Anthropic, etc.)
+- Git (for VCS analysis)
+- LLM API key (OpenAI, Anthropic, or any LiteLLM-compatible provider) for agent queries and enrichment
 
-## Contributing
+## Built With
 
-Hammy is in active development. Contributions, issues, and feature requests are welcome!
-
-## Acknowledgments
-
-Built with:
-- [CrewAI](https://github.com/joaomdmoura/crewAI) - Multi-agent orchestration
-- [Tree-sitter](https://tree-sitter.github.io/) - Incremental parsing
-- [Qdrant](https://qdrant.tech/) - Vector database
-- [uv](https://github.com/astral-sh/uv) - Python package management
+- [Tree-sitter](https://tree-sitter.github.io/) — incremental, multi-language AST parsing
+- [Qdrant](https://qdrant.tech/) — vector database for semantic search and memory
+- [CrewAI](https://github.com/joaomdmoura/crewAI) — multi-agent orchestration
+- [mcp-python](https://github.com/modelcontextprotocol/python-sdk) — Model Context Protocol server
+- [rank-bm25](https://github.com/dorianbrown/rank_bm25) — BM25Plus for hybrid search
+- [watchfiles](https://github.com/samuelcolvin/watchfiles) — fast filesystem watching
+- [uv](https://github.com/astral-sh/uv) — Python package management

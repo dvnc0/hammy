@@ -333,6 +333,98 @@ def status(
 
 
 @app.command()
+def watch(
+    path: Path = typer.Argument(
+        Path("."),
+        help="Project root directory to watch.",
+    ),
+    no_qdrant: bool = typer.Option(
+        False,
+        "--no-qdrant",
+        help="Watch without updating Qdrant embeddings.",
+    ),
+    debounce: float = typer.Option(
+        1.5,
+        "--debounce",
+        help="Seconds to wait after last change before reindexing (default: 1.5).",
+    ),
+) -> None:
+    """Watch a project directory and auto-reindex on file changes."""
+    import threading
+
+    from dotenv import load_dotenv
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich.text import Text
+
+    from hammy.config import HammyConfig
+    from hammy.indexer.code_indexer import index_codebase
+    from hammy.tools.qdrant_tools import QdrantManager
+    from hammy.watcher import watch_project
+
+    path = path.resolve()
+    load_dotenv(path / ".env")
+    config = HammyConfig.load(path)
+
+    qdrant = None
+    if not no_qdrant:
+        try:
+            qdrant = QdrantManager(config.qdrant)
+            qdrant.ensure_collections()
+        except Exception as e:
+            console.print(f"[yellow]Qdrant not available ({e}) — watching without embeddings.[/yellow]")
+
+    console.print(f"[bold blue]Hammy Watch[/bold blue]  {config.project.name}")
+    console.print(f"  Project: {path}")
+    console.print("[dim]Performing initial index...[/dim]")
+
+    with console.status("[bold blue]Indexing..."):
+        result, all_nodes, all_edges = index_codebase(
+            config, qdrant=qdrant, store_in_qdrant=qdrant is not None
+        )
+
+    console.print(
+        f"  [green]Ready.[/green] {result.files_processed} files | "
+        f"{result.nodes_extracted} symbols | "
+        f"{result.edges_extracted} edges"
+    )
+    if qdrant is not None:
+        console.print(f"  Qdrant: {result.nodes_indexed} embeddings stored")
+
+    console.print(f"\n[bold]Watching for changes[/bold] [dim](Ctrl+C to stop)[/dim]\n")
+
+    stop_event = threading.Event()
+    change_count = 0
+
+    def _on_change(event_type: str, added: int, removed: int, errors: int) -> None:
+        nonlocal change_count
+        change_count += 1
+        qdrant_note = " + Qdrant" if qdrant is not None else ""
+        err_note = f"  [yellow]{errors} error(s)[/yellow]" if errors else ""
+        console.print(
+            f"  [{change_count:04d}] {event_type}: "
+            f"[green]+{added}[/green] / [red]-{removed}[/red] symbols{qdrant_note}{err_note}"
+        )
+
+    try:
+        watch_project(
+            path,
+            config,
+            all_nodes,
+            all_edges,
+            qdrant=qdrant,
+            debounce_seconds=debounce,
+            on_change=_on_change,
+            stop_event=stop_event,
+        )
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop_event.set()
+        console.print("\n[bold]Watch stopped.[/bold]")
+
+
+@app.command()
 def serve(
     path: Path = typer.Argument(
         Path("."),

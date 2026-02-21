@@ -190,6 +190,98 @@ def make_explorer_tools(
 
         return "\n\n".join(lines)
 
+    @tool("Structural Search")
+    def structural_search(
+        node_type: str = "",
+        language: str = "",
+        visibility: str = "",
+        async_only: bool = False,
+        min_params: int = 0,
+        max_params: int = -1,
+        return_type: str = "",
+        name_pattern: str = "",
+        file_filter: str = "",
+        min_complexity: int = 0,
+        limit: int = 50,
+    ) -> str:
+        """Filter code symbols by structural metadata.
+
+        Find symbols matching specific structural criteria. All filters are optional
+        and combine with AND. Examples:
+          - All public methods: visibility='public', node_type='method'
+          - Async functions in controllers: async_only=True, file_filter='controllers'
+          - Methods with 3+ params returning bool: min_params=3, return_type='bool'
+          - Complex functions: min_complexity=10, node_type='function'
+
+        Args:
+            node_type: 'class', 'function', 'method', or 'endpoint'.
+            language: Language filter ('php', 'javascript', 'python', etc.).
+            visibility: 'public', 'private', or 'protected'.
+            async_only: If True, return only async functions/methods.
+            min_params: Minimum number of parameters.
+            max_params: Maximum number of parameters (-1 = no limit).
+            return_type: Substring match on return type (e.g. 'bool', 'void', 'User').
+            name_pattern: Regex pattern to match symbol names.
+            file_filter: Path substring to restrict results (e.g. 'controllers/').
+            min_complexity: Minimum complexity score.
+            limit: Maximum results (capped at 200).
+        """
+        name_re = re.compile(name_pattern, re.IGNORECASE) if name_pattern else None
+        limit = min(limit, 200)
+        results: list[Node] = []
+
+        for node in all_nodes:
+            if node_type and node.type.value != node_type:
+                continue
+            if language and node.language != language:
+                continue
+            if visibility and (node.meta.visibility or "").lower() != visibility.lower():
+                continue
+            if async_only and not node.meta.is_async:
+                continue
+            param_count = len(node.meta.parameters)
+            if param_count < min_params:
+                continue
+            if max_params >= 0 and param_count > max_params:
+                continue
+            if return_type and return_type.lower() not in (node.meta.return_type or "").lower():
+                continue
+            if name_re and not name_re.search(node.name):
+                continue
+            if file_filter and file_filter.lower() not in node.loc.file.lower():
+                continue
+            if min_complexity > 0 and (node.meta.complexity_score or 0) < min_complexity:
+                continue
+            results.append(node)
+
+        if not results:
+            return "No symbols matched the given filters."
+
+        lines = [f"{len(results)} symbol(s) matched:\n"]
+        for n in results[:limit]:
+            parts = [f"{n.type.value}: {n.name} ({n.loc.file}:{n.loc.lines[0]})"]
+            attrs: list[str] = []
+            if n.meta.visibility:
+                attrs.append(n.meta.visibility)
+            if n.meta.is_async:
+                attrs.append("async")
+            if n.meta.parameters:
+                attrs.append(f"{len(n.meta.parameters)} params")
+            if n.meta.return_type:
+                attrs.append(f"-> {n.meta.return_type}")
+            if n.meta.complexity_score is not None:
+                attrs.append(f"complexity={n.meta.complexity_score}")
+            if attrs:
+                parts.append(f"  [{', '.join(attrs)}]")
+            if n.summary:
+                parts.append(f"  {n.summary}")
+            lines.append("\n".join(parts))
+
+        if len(results) > limit:
+            lines.append(f"\n... and {len(results) - limit} more. Narrow with additional filters.")
+
+        return "\n\n".join(lines)
+
     @tool("Find Usages")
     def find_usages(symbol_name: str, file_filter: str = "") -> str:
         """Find all call sites of a specific function or method by exact name.
@@ -237,6 +329,58 @@ def make_explorer_tools(
             )
         if len(callers) > 30:
             lines.append(f"\n... and {len(callers) - 30} more. Use file_filter to narrow.")
+        return "\n".join(lines)
+
+    @tool("Hybrid Code Search")
+    def search_code_hybrid(
+        query: str,
+        language: str = "",
+        node_type: str = "",
+        limit: int = 10,
+    ) -> str:
+        """Hybrid BM25 keyword + semantic search merged via Reciprocal Rank Fusion.
+
+        Combines exact keyword precision with conceptual similarity so results
+        are relevant both by name/term and by meaning. Use when the query mixes
+        exact identifiers (like variable names) with descriptive concepts.
+        Results come from the in-memory node index (BM25) and optionally from
+        Qdrant embeddings when available.
+
+        Args:
+            query: Keywords or natural language description.
+            language: Optional language filter ('php', 'javascript', 'python', etc.).
+            node_type: Optional type filter ('class', 'function', 'method', 'endpoint').
+            limit: Maximum results to return.
+        """
+        from hammy.tools.hybrid_search import hybrid_search
+
+        limit = min(limit, 25)
+        results = hybrid_search(
+            query,
+            all_nodes,
+            qdrant=qdrant,
+            limit=limit,
+            language=language or None,
+            node_type=node_type or None,
+        )
+
+        if not results:
+            return f"No code matching '{query}' found."
+
+        lines = []
+        for r in results:
+            score = r.get("score", 0)
+            line = (
+                f"[{score:.3f}] {r.get('type', '?')}: {r.get('name', '?')} "
+                f"({r.get('file', '?')}:{r.get('lines', [0])[0]})"
+            )
+            if r.get("summary"):
+                line += f" | {r['summary']}"
+            lines.append(line)
+
+        if len(results) >= limit:
+            lines.append(f"\n... showing top {limit}. Use language/node_type to narrow.")
+
         return "\n".join(lines)
 
     @tool("Impact Analysis")
@@ -358,6 +502,126 @@ def make_explorer_tools(
 
         return "\n".join(lines) if lines else f"No call graph data found for '{symbol_name}'."
 
+    @tool("Hotspot Score")
+    def hotspot_score(
+        top_n: int = 20,
+        node_type: str = "",
+        language: str = "",
+        file_filter: str = "",
+    ) -> str:
+        """Rank symbols by composite risk: caller count × file churn.
+
+        Hotspots are symbols that are both heavily depended upon (many callers)
+        and frequently modified (high churn). These are the highest-risk places
+        to touch in the codebase. Churn uses node.history.churn_rate when available.
+
+        Args:
+            top_n: Number of top hotspots to return.
+            node_type: Optional filter ('function', 'method', 'class').
+            language: Optional language filter.
+            file_filter: Optional path substring to restrict results.
+        """
+        from hammy.tools.hotspot import compute_hotspots
+
+        top_n = min(top_n, 50)
+        results = compute_hotspots(
+            all_nodes,
+            all_edges,
+            node_type=node_type,
+            language=language,
+            file_filter=file_filter,
+            top_n=top_n,
+        )
+
+        if not results:
+            return "No symbols found matching the given filters."
+
+        has_churn = any(r["churn_rate"] > 0 for r in results)
+        note = "" if has_churn else " (no churn data — scoring by caller count only)"
+        lines = [f"Top {len(results)} hotspots{note}:\n"]
+
+        for rank, r in enumerate(results, 1):
+            attrs = []
+            if r["visibility"]:
+                attrs.append(r["visibility"])
+            if r["is_async"]:
+                attrs.append("async")
+            attr_str = f" [{', '.join(attrs)}]" if attrs else ""
+            lines.append(
+                f"#{rank:2d} [score={r['score']:.1f}] "
+                f"{r['type']}: {r['name']}{attr_str} "
+                f"({r['file']}:{r['lines'][0]})  "
+                f"callers={r['caller_count']}  churn={r['churn_rate']}"
+            )
+            if r["summary"]:
+                lines.append(f"     {r['summary']}")
+
+        return "\n".join(lines)
+
+    @tool("PR Diff Analysis")
+    def pr_diff(
+        diff_text: str,
+        depth: int = 2,
+    ) -> str:
+        """Analyse a unified diff (from git diff or a PR) to show changed symbols and blast radius.
+
+        Parses the diff to find which functions/methods were modified, then runs
+        impact analysis to show who depends on each changed symbol. Use this to
+        understand the risk and scope of a PR before merging.
+
+        Args:
+            diff_text: Raw unified diff text (paste from 'git diff' or GitHub PR).
+            depth: Caller traversal depth for impact analysis (default 2).
+        """
+        from hammy.tools.diff_analysis import analyze_diff
+
+        raw_diff = diff_text.strip()
+        if not raw_diff:
+            return "diff_text is empty. Paste a unified diff (output of 'git diff')."
+
+        report = analyze_diff(raw_diff, all_nodes, all_edges, depth=depth)
+
+        if not report.changed_files:
+            return "Could not parse any changed files from the diff."
+
+        lines: list[str] = []
+        total_symbols = len(report.all_changed_symbols)
+        total_files = len(report.changed_files)
+        lines.append(f"PR Diff Analysis  ({total_files} file(s) changed, {total_symbols} symbol(s) detected)\n")
+
+        lines.append("Changed files:")
+        for cf in report.changed_files:
+            sym_note = f"  [{', '.join(cf.changed_symbols[:5])}{'…' if len(cf.changed_symbols) > 5 else ''}]" if cf.changed_symbols else ""
+            lines.append(f"  [{cf.change_type:8s}] {cf.path}{sym_note}")
+
+        indexed = [r for r in report.impact if r["indexed"]]
+        unindexed = [r for r in report.impact if not r["indexed"]]
+
+        if indexed:
+            lines.append(f"\nImpact analysis (depth={depth}):\n")
+            for r in indexed:
+                caller_count = r["caller_count"]
+                risk = "HIGH" if caller_count >= 5 else "MED" if caller_count >= 2 else "LOW"
+                lines.append(
+                    f"  [{risk}] {r['type']}: {r['symbol']}  "
+                    f"({r['file']}:{r.get('line', '?')})  callers={caller_count}"
+                )
+                for caller in r["callers"][:4]:
+                    lines.append(
+                        f"         ← {caller['type']}: {caller['name']} ({caller['file']}:{caller['line']})"
+                    )
+                if caller_count > 4:
+                    lines.append(f"         … and {caller_count - 4} more")
+
+        if unindexed:
+            lines.append(f"\nNew/unindexed symbols: {', '.join(r['symbol'] for r in unindexed)}")
+
+        high_risk = [r for r in indexed if r["caller_count"] >= 5]
+        if high_risk:
+            lines.append(f"\n⚠  {len(high_risk)} HIGH-RISK change(s): " + ", ".join(r["symbol"] for r in high_risk))
+
+        return "\n".join(lines)
+
     @tool("Find Cross-Language Bridges")
     def find_bridges() -> str:
         """Find all cross-language connections (e.g., JS fetch calls matching PHP routes).
@@ -403,7 +667,7 @@ def make_explorer_tools(
 
         return "\n".join(lines)
 
-    core_tools = [ast_query, search_symbols, lookup_symbol, find_usages, impact_analysis, find_bridges, list_files]
+    core_tools = [ast_query, search_symbols, search_code_hybrid, lookup_symbol, structural_search, find_usages, impact_analysis, hotspot_score, pr_diff, find_bridges, list_files]
 
     if qdrant is None:
         return core_tools

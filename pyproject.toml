@@ -28,10 +28,13 @@ dependencies = [
     "mcp>=1.0.0",
     # Embeddings
     "sentence-transformers>=3.0.0",
+    # Hybrid search
+    "rank-bm25>=0.2.2",
     "tree-sitter-python>=0.25.0",
     "tree-sitter-typescript>=0.23.2",
     "tree-sitter-go>=0.25.0",
     "python-dotenv>=1.1.1",
+    "watchfiles>=1.1.1",
 ]
 
 [project.optional-dependencies]

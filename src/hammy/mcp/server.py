@@ -458,6 +458,100 @@ def create_mcp_server(
         return "\n".join(lines) if lines else f"No call graph data found for '{symbol_name}'."
 
     @mcp.tool(
+        name="structural_search",
+        description=(
+            "Filter code symbols by structural attributes: visibility, async, parameter count, "
+            "return type, name regex, file path, or complexity. "
+            "Examples: all public methods with 3+ params; async functions in controllers/; "
+            "methods returning bool; classes with complexity > 10. "
+            "All filters are optional and combine with AND. Leave blank to skip a filter."
+        ),
+    )
+    def structural_search(
+        node_type: str = "",
+        language: str = "",
+        visibility: str = "",
+        async_only: bool = False,
+        min_params: int = 0,
+        max_params: int = -1,
+        return_type: str = "",
+        name_pattern: str = "",
+        file_filter: str = "",
+        min_complexity: int = 0,
+        limit: int = 50,
+    ) -> str:
+        """Filter symbols by structural metadata.
+
+        Args:
+            node_type: 'class', 'function', 'method', or 'endpoint'.
+            language: Language filter ('php', 'javascript', 'python', etc.).
+            visibility: 'public', 'private', or 'protected'.
+            async_only: If true, return only async functions/methods.
+            min_params: Minimum number of parameters (0 = no minimum).
+            max_params: Maximum number of parameters (-1 = no limit).
+            return_type: Substring match on return type (e.g. 'bool', 'void', 'User').
+            name_pattern: Regex pattern to match symbol names.
+            file_filter: Path substring to restrict results (e.g. 'controllers/').
+            min_complexity: Minimum complexity score (0 = no minimum).
+            limit: Maximum results (capped at 200).
+        """
+        limit = min(limit, 200)
+        name_re = re.compile(name_pattern, re.IGNORECASE) if name_pattern else None
+        results: list[Node] = []
+
+        for node in all_nodes:
+            if node_type and node.type.value != node_type:
+                continue
+            if language and node.language != language:
+                continue
+            if visibility and (node.meta.visibility or "").lower() != visibility.lower():
+                continue
+            if async_only and not node.meta.is_async:
+                continue
+            param_count = len(node.meta.parameters)
+            if param_count < min_params:
+                continue
+            if max_params >= 0 and param_count > max_params:
+                continue
+            if return_type and return_type.lower() not in (node.meta.return_type or "").lower():
+                continue
+            if name_re and not name_re.search(node.name):
+                continue
+            if file_filter and file_filter.lower() not in node.loc.file.lower():
+                continue
+            if min_complexity > 0 and (node.meta.complexity_score or 0) < min_complexity:
+                continue
+            results.append(node)
+
+        if not results:
+            return "No symbols matched the given filters."
+
+        lines = [f"{len(results)} symbol(s) matched:\n"]
+        for n in results[:limit]:
+            parts = [f"{n.type.value}: {n.name} ({n.loc.file}:{n.loc.lines[0]})"]
+            attrs: list[str] = []
+            if n.meta.visibility:
+                attrs.append(n.meta.visibility)
+            if n.meta.is_async:
+                attrs.append("async")
+            if n.meta.parameters:
+                attrs.append(f"{len(n.meta.parameters)} params")
+            if n.meta.return_type:
+                attrs.append(f"-> {n.meta.return_type}")
+            if n.meta.complexity_score is not None:
+                attrs.append(f"complexity={n.meta.complexity_score}")
+            if attrs:
+                parts.append(f"  [{', '.join(attrs)}]")
+            if n.summary:
+                parts.append(f"  {n.summary}")
+            lines.append("\n".join(parts))
+
+        if len(results) > limit:
+            lines.append(f"\n... and {len(results) - limit} more. Narrow with additional filters.")
+
+        return "\n\n".join(lines)
+
+    @mcp.tool(
         name="find_bridges",
         description=(
             "Find cross-language connections (e.g., JS fetch calls matching PHP routes). "
@@ -479,6 +573,77 @@ def create_mcp_server(
             )
 
         return "\n".join(lines)
+
+    @mcp.tool(
+        name="hotspot_score",
+        description=(
+            "Rank code symbols by composite risk: caller_count × file_churn. "
+            "High-scoring symbols are both heavily depended upon AND frequently changed — "
+            "the highest-risk places to touch. Uses VCS history for churn when available. "
+            "Filter by node_type, language, or file_filter to focus on a subsystem."
+        ),
+    )
+    def hotspot_score(
+        top_n: int = 20,
+        node_type: str = "",
+        language: str = "",
+        file_filter: str = "",
+        window_days: int = 90,
+    ) -> str:
+        """Compute composite hotspot scores for code symbols.
+
+        Args:
+            top_n: Number of top hotspots to return (capped at 50).
+            node_type: Optional type filter ('function', 'method', 'class').
+            language: Optional language filter.
+            file_filter: Optional path substring to restrict results.
+            window_days: Churn lookback window in days (requires VCS).
+        """
+        from hammy.tools.hotspot import compute_hotspots
+
+        top_n = min(top_n, 50)
+
+        # Get file-level churn from VCS if available
+        file_churn: dict[str, int] | None = None
+        if vcs is not None:
+            try:
+                file_churn = dict(vcs.churn(window_days=window_days))
+            except Exception:
+                pass
+
+        results = compute_hotspots(
+            all_nodes,
+            all_edges,
+            file_churn=file_churn,
+            node_type=node_type,
+            language=language,
+            file_filter=file_filter,
+            top_n=top_n,
+        )
+
+        if not results:
+            return "No symbols found matching the given filters."
+
+        churn_note = f" (churn window: {window_days}d)" if file_churn else " (no VCS churn data — scoring by callers only)"
+        lines = [f"Top {len(results)} hotspots{churn_note}:\n"]
+
+        for rank, r in enumerate(results, 1):
+            attrs = []
+            if r["visibility"]:
+                attrs.append(r["visibility"])
+            if r["is_async"]:
+                attrs.append("async")
+            attr_str = f" [{', '.join(attrs)}]" if attrs else ""
+            lines.append(
+                f"#{rank:2d} [score={r['score']:.1f}] "
+                f"{r['type']}: {r['name']}{attr_str}\n"
+                f"     {r['file']}:{r['lines'][0]}\n"
+                f"     callers: {r['caller_count']}  |  churn: {r['churn_rate']}"
+            )
+            if r["summary"]:
+                lines.append(f"     {r['summary']}")
+
+        return "\n\n".join(lines)
 
     @mcp.tool(
         name="index_status",
@@ -668,6 +833,116 @@ def create_mcp_server(
 
             return "\n".join(lines)
 
+    # --- PR / Diff Analysis ---
+
+    @mcp.tool(
+        name="pr_diff",
+        description=(
+            "Analyse a pull request or diff to show what symbols changed and their blast radius. "
+            "Pass a raw unified diff via diff_text (paste from 'git diff' or GitHub), OR "
+            "provide base_ref (e.g. 'main', 'HEAD~3') to auto-compute the diff from VCS. "
+            "Returns: changed files, modified symbols, and their callers (who is affected)."
+        ),
+    )
+    def pr_diff(
+        diff_text: str = "",
+        base_ref: str = "",
+        head_ref: str = "",
+        depth: int = 2,
+    ) -> str:
+        """Analyse a diff and return symbol-level impact.
+
+        Args:
+            diff_text: Raw unified diff text (paste from git diff / GitHub).
+            base_ref: Base git ref to diff from (e.g. 'main', 'HEAD~1').
+                      Used when diff_text is empty and VCS is available.
+            head_ref: Head ref to diff to (default: working tree / HEAD).
+            depth: Caller traversal depth for impact analysis (default 2).
+        """
+        from hammy.tools.diff_analysis import analyze_diff
+
+        raw_diff = diff_text.strip()
+
+        # If no diff_text, try to fetch from VCS
+        if not raw_diff:
+            if vcs is None:
+                return (
+                    "No diff_text provided and VCS is not available. "
+                    "Paste a unified diff using the diff_text parameter."
+                )
+            if not base_ref:
+                return (
+                    "Provide either diff_text (raw unified diff) or base_ref "
+                    "(e.g. 'main', 'HEAD~1') to compute the diff automatically."
+                )
+            try:
+                head = head_ref if head_ref else "HEAD"
+                raw_diff = vcs.diff(base_ref, head)
+            except Exception as e:
+                return f"Failed to compute diff from VCS: {e}"
+
+        if not raw_diff:
+            return "Diff is empty — no changes to analyse."
+
+        report = analyze_diff(raw_diff, all_nodes, all_edges, depth=depth)
+
+        if not report.changed_files:
+            return "Could not parse any changed files from the diff."
+
+        lines: list[str] = []
+
+        # --- Summary header ---
+        total_symbols = len(report.all_changed_symbols)
+        total_files = len(report.changed_files)
+        lines.append(f"PR Diff Analysis  ({total_files} file(s) changed, {total_symbols} symbol(s) detected)\n")
+
+        # --- Changed files ---
+        lines.append("Changed files:")
+        for cf in report.changed_files:
+            sym_note = f"  [{', '.join(cf.changed_symbols[:5])}{'…' if len(cf.changed_symbols) > 5 else ''}]" if cf.changed_symbols else ""
+            lines.append(f"  [{cf.change_type:8s}] {cf.path}{sym_note}")
+
+        # --- Impact per symbol ---
+        indexed = [r for r in report.impact if r["indexed"]]
+        unindexed = [r for r in report.impact if not r["indexed"]]
+
+        if indexed:
+            lines.append(f"\nImpact analysis (depth={depth}):\n")
+            for r in indexed:
+                caller_count = r["caller_count"]
+                risk = "HIGH" if caller_count >= 5 else "MED" if caller_count >= 2 else "LOW"
+                attrs = []
+                if r.get("visibility"):
+                    attrs.append(r["visibility"])
+                attr_str = f" [{', '.join(attrs)}]" if attrs else ""
+                lines.append(
+                    f"  [{risk}] {r['type']}: {r['symbol']}{attr_str}  "
+                    f"({r['file']}:{r.get('line', '?')})  callers={caller_count}"
+                )
+                if r.get("summary"):
+                    lines.append(f"         {r['summary']}")
+                for caller in r["callers"][:5]:
+                    lines.append(
+                        f"         ← {caller['type']}: {caller['name']} "
+                        f"({caller['file']}:{caller['line']})"
+                    )
+                if caller_count > 5:
+                    lines.append(f"         … and {caller_count - 5} more callers")
+
+        if unindexed:
+            lines.append(f"\nNew/unindexed symbols (not yet in graph):")
+            for r in unindexed:
+                lines.append(f"  + {r['symbol']}")
+
+        # Overall risk summary
+        high_risk = [r for r in indexed if r["caller_count"] >= 5]
+        if high_risk:
+            lines.append(f"\n⚠  {len(high_risk)} HIGH-RISK symbol(s) changed (5+ callers):")
+            for r in high_risk:
+                lines.append(f"   • {r['symbol']} — {r['caller_count']} callers")
+
+        return "\n".join(lines)
+
     # --- Semantic Search Tools (require Qdrant) ---
 
     if qdrant is not None:
@@ -712,6 +987,57 @@ def create_mcp_server(
                 score = r.get("score", 0)
                 lines.append(
                     f"[{score:.2f}] {r.get('type', '?')}: {r.get('name', '?')} "
+                    f"({r.get('file', '?')}:{r.get('lines', '?')})"
+                )
+                if r.get("summary"):
+                    lines.append(f"  {r['summary']}")
+
+            return "\n".join(lines)
+
+        @mcp.tool(
+            name="search_code_hybrid",
+            description=(
+                "Hybrid search combining BM25 keyword matching with semantic embeddings. "
+                "Use when you want both exact keyword precision (e.g. variable names, method "
+                "names) AND conceptual similarity. Results are merged via Reciprocal Rank "
+                "Fusion so highly-ranked in either list floats to the top. "
+                "Prefer this over search_code when the query mixes exact terms and concepts."
+            ),
+        )
+        def search_code_hybrid(
+            query: str,
+            limit: int = 10,
+            language: str = "",
+            node_type: str = "",
+        ) -> str:
+            """Hybrid BM25 + semantic code search with RRF fusion.
+
+            Args:
+                query: Keywords or natural language description.
+                limit: Maximum results to return (capped at 20).
+                language: Optional language filter.
+                node_type: Optional type filter ('class', 'function', 'method').
+            """
+            from hammy.tools.hybrid_search import hybrid_search
+
+            limit = min(limit, 20)
+            results = hybrid_search(
+                query,
+                all_nodes,
+                qdrant=qdrant,
+                limit=limit,
+                language=language or None,
+                node_type=node_type or None,
+            )
+
+            if not results:
+                return f"No code matching '{query}' found."
+
+            lines = []
+            for r in results:
+                score = r.get("score", 0)
+                lines.append(
+                    f"[{score:.3f}] {r.get('type', '?')}: {r.get('name', '?')} "
                     f"({r.get('file', '?')}:{r.get('lines', '?')})"
                 )
                 if r.get("summary"):

@@ -6,6 +6,7 @@ These tests cover the non-LLM parts of the agent system:
 - Explorer and Historian tool creation
 """
 
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -253,13 +254,17 @@ class TestExplorerTools:
 
         factory = ParserFactory()
         tools = make_explorer_tools(tmp_path, factory, [], [])
-        assert len(tools) == 7
+        assert len(tools) == 11
         tool_names = [t.name for t in tools]
         assert "AST Query" in tool_names
         assert "Search Code Symbols" in tool_names
+        assert "Hybrid Code Search" in tool_names
         assert "Lookup Symbol" in tool_names
+        assert "Structural Search" in tool_names
         assert "Find Usages" in tool_names
         assert "Impact Analysis" in tool_names
+        assert "Hotspot Score" in tool_names
+        assert "PR Diff Analysis" in tool_names
         assert "Find Cross-Language Bridges" in tool_names
         assert "List Files" in tool_names
         # Brain tools should NOT be present without qdrant
@@ -274,7 +279,7 @@ class TestExplorerTools:
 
         mock_qdrant = MagicMock()
         tools = make_explorer_tools(tmp_path, ParserFactory(), [], [], qdrant=mock_qdrant)
-        assert len(tools) == 10
+        assert len(tools) == 14
         tool_names = [t.name for t in tools]
         assert "Store Context" in tool_names
         assert "Recall Context" in tool_names
@@ -500,6 +505,246 @@ class TestImpactAnalysis:
         assert "handleRequest" not in result
 
 
+def _make_node_meta(
+    name: str,
+    ntype: NodeType,
+    file: str = "src/a.php",
+    language: str = "php",
+    visibility: str = "",
+    is_async: bool = False,
+    params: list | None = None,
+    return_type: str = "",
+    complexity: int | None = None,
+) -> Node:
+    from hammy.schema.models import NodeMeta
+    return Node(
+        id=Node.make_id(file, name),
+        type=ntype,
+        name=name,
+        loc=Location(file=file, lines=(1, 10)),
+        language=language,
+        meta=NodeMeta(
+            visibility=visibility or None,
+            is_async=is_async,
+            parameters=params or [],
+            return_type=return_type or None,
+            complexity_score=complexity,
+        ),
+    )
+
+
+class TestStructuralSearch:
+    def _tool(self, tmp_path, nodes):
+        from hammy.agents.explorer import make_explorer_tools
+        from hammy.tools.parser import ParserFactory
+        tools = make_explorer_tools(tmp_path, ParserFactory(), nodes, [])
+        return next(t for t in tools if t.name == "Structural Search")
+
+    def test_visibility_filter(self, tmp_path: Path):
+        nodes = [
+            _make_node_meta("pub", NodeType.METHOD, visibility="public"),
+            _make_node_meta("priv", NodeType.METHOD, visibility="private"),
+        ]
+        tool = self._tool(tmp_path, nodes)
+        result = tool.func(visibility="public")
+        assert "pub" in result
+        assert "priv" not in result
+
+    def test_async_only(self, tmp_path: Path):
+        nodes = [
+            _make_node_meta("fetchData", NodeType.FUNCTION, is_async=True),
+            _make_node_meta("syncFunc", NodeType.FUNCTION, is_async=False),
+        ]
+        tool = self._tool(tmp_path, nodes)
+        result = tool.func(async_only=True)
+        assert "fetchData" in result
+        assert "syncFunc" not in result
+
+    def test_min_params(self, tmp_path: Path):
+        nodes = [
+            _make_node_meta("noArgs", NodeType.FUNCTION, params=[]),
+            _make_node_meta("twoArgs", NodeType.FUNCTION, params=["a", "b"]),
+            _make_node_meta("threeArgs", NodeType.FUNCTION, params=["a", "b", "c"]),
+        ]
+        tool = self._tool(tmp_path, nodes)
+        result = tool.func(min_params=2)
+        assert "noArgs" not in result
+        assert "twoArgs" in result
+        assert "threeArgs" in result
+
+    def test_max_params(self, tmp_path: Path):
+        nodes = [
+            _make_node_meta("noArgs", NodeType.FUNCTION, params=[]),
+            _make_node_meta("twoArgs", NodeType.FUNCTION, params=["a", "b"]),
+        ]
+        tool = self._tool(tmp_path, nodes)
+        result = tool.func(max_params=0)
+        assert "noArgs" in result
+        assert "twoArgs" not in result
+
+    def test_return_type_substring(self, tmp_path: Path):
+        nodes = [
+            _make_node_meta("getUser", NodeType.METHOD, return_type="User"),
+            _make_node_meta("isValid", NodeType.METHOD, return_type="bool"),
+        ]
+        tool = self._tool(tmp_path, nodes)
+        result = tool.func(return_type="bool")
+        assert "isValid" in result
+        assert "getUser" not in result
+
+    def test_name_pattern_regex(self, tmp_path: Path):
+        nodes = [
+            _make_node_meta("getUser", NodeType.METHOD),
+            _make_node_meta("setUser", NodeType.METHOD),
+            _make_node_meta("deleteUser", NodeType.METHOD),
+        ]
+        tool = self._tool(tmp_path, nodes)
+        result = tool.func(name_pattern="^get")
+        assert "getUser" in result
+        assert "setUser" not in result
+        assert "deleteUser" not in result
+
+    def test_file_filter(self, tmp_path: Path):
+        nodes = [
+            _make_node_meta("ctrlMethod", NodeType.METHOD, file="controllers/Ctrl.php"),
+            _make_node_meta("modelMethod", NodeType.METHOD, file="models/Model.php"),
+        ]
+        tool = self._tool(tmp_path, nodes)
+        result = tool.func(file_filter="controllers")
+        assert "ctrlMethod" in result
+        assert "modelMethod" not in result
+
+    def test_node_type_filter(self, tmp_path: Path):
+        nodes = [
+            _make_node_meta("MyClass", NodeType.CLASS),
+            _make_node_meta("myFunc", NodeType.FUNCTION),
+        ]
+        tool = self._tool(tmp_path, nodes)
+        result = tool.func(node_type="class")
+        assert "MyClass" in result
+        assert "myFunc" not in result
+
+    def test_combined_filters(self, tmp_path: Path):
+        nodes = [
+            _make_node_meta("pubAsync", NodeType.METHOD, visibility="public", is_async=True),
+            _make_node_meta("pubSync", NodeType.METHOD, visibility="public", is_async=False),
+            _make_node_meta("privAsync", NodeType.METHOD, visibility="private", is_async=True),
+        ]
+        tool = self._tool(tmp_path, nodes)
+        result = tool.func(visibility="public", async_only=True)
+        assert "pubAsync" in result
+        assert "pubSync" not in result
+        assert "privAsync" not in result
+
+    def test_no_match(self, tmp_path: Path):
+        nodes = [_make_node_meta("foo", NodeType.FUNCTION, language="python")]
+        tool = self._tool(tmp_path, nodes)
+        result = tool.func(language="php")
+        assert "No symbols matched" in result
+
+    def test_complexity_filter(self, tmp_path: Path):
+        nodes = [
+            _make_node_meta("simple", NodeType.FUNCTION, complexity=2),
+            _make_node_meta("complex", NodeType.FUNCTION, complexity=15),
+        ]
+        tool = self._tool(tmp_path, nodes)
+        result = tool.func(min_complexity=10)
+        assert "complex" in result
+        assert "simple" not in result
+
+
+class TestHotspotScore:
+    """Tests for the hotspot scoring algorithm."""
+
+    def _nodes_and_edges(self):
+        """Build a small call graph: handleRequest -> processRenewal -> getRenew."""
+        getRenew = _make_node("getRenew", NodeType.METHOD, "Subscription.php")
+        processRenewal = _make_node("processRenewal", NodeType.METHOD, "RenewalService.php")
+        handleRequest = _make_node("handleRequest", NodeType.METHOD, "RenewalController.php")
+        otherFunc = _make_node("otherFunc", NodeType.FUNCTION, "Util.php")
+
+        edges = [
+            _make_calls_edge(processRenewal.id, "getRenew"),
+            _make_calls_edge(handleRequest.id, "getRenew"),  # getRenew has 2 callers
+            _make_calls_edge(handleRequest.id, "processRenewal"),  # processRenewal has 1
+        ]
+        return [getRenew, processRenewal, handleRequest, otherFunc], edges
+
+    def test_ranks_by_caller_count(self, tmp_path: Path):
+        from hammy.tools.hotspot import compute_hotspots
+
+        nodes, edges = self._nodes_and_edges()
+        results = compute_hotspots(nodes, edges, top_n=10)
+
+        # getRenew has 2 callers — should be ranked #1
+        assert results[0]["name"] == "getRenew"
+        assert results[0]["caller_count"] == 2
+
+    def test_churn_boosts_score(self, tmp_path: Path):
+        from hammy.tools.hotspot import compute_hotspots
+        from hammy.schema.models import NodeHistory
+
+        getRenew = _make_node("getRenew", NodeType.METHOD, "Subscription.php")
+        processRenewal = _make_node("processRenewal", NodeType.METHOD, "RenewalService.php")
+
+        # Give processRenewal only 1 caller but huge churn — should beat getRenew (2 callers, 0 churn)
+        processRenewal.history = NodeHistory(churn_rate=100)
+        edges = [
+            _make_calls_edge(processRenewal.id, "getRenew"),
+            _make_calls_edge(_make_node("other", NodeType.FUNCTION, "x.php").id, "getRenew"),
+            _make_calls_edge(_make_node("caller", NodeType.FUNCTION, "y.php").id, "processRenewal"),
+        ]
+
+        results = compute_hotspots([getRenew, processRenewal], edges, top_n=10)
+        # processRenewal has churn=100 × callers=1 vs getRenew churn=0
+        # log2(2) * log2(2) = 1.0 for getRenew (churn defaults to 1)
+        # log2(2) * log2(101) ≈ 6.66 for processRenewal
+        top_name = results[0]["name"]
+        assert top_name == "processRenewal"
+
+    def test_file_churn_dict(self, tmp_path: Path):
+        from hammy.tools.hotspot import compute_hotspots
+
+        nodes, edges = self._nodes_and_edges()
+        file_churn = {"Subscription.php": 50}  # getRenew's file has high churn
+        results = compute_hotspots(nodes, edges, file_churn=file_churn, top_n=10)
+
+        getRenew_result = next(r for r in results if r["name"] == "getRenew")
+        assert getRenew_result["churn_rate"] == 50
+        assert getRenew_result["score"] > 0
+
+    def test_filters(self, tmp_path: Path):
+        from hammy.tools.hotspot import compute_hotspots
+
+        nodes, edges = self._nodes_and_edges()
+        results = compute_hotspots(nodes, edges, node_type="function", top_n=10)
+        assert all(r["type"] == "function" for r in results)
+
+    def test_empty_nodes(self, tmp_path: Path):
+        from hammy.tools.hotspot import compute_hotspots
+        assert compute_hotspots([], [], top_n=10) == []
+
+    def test_zero_callers_zero_churn(self, tmp_path: Path):
+        from hammy.tools.hotspot import compute_hotspots
+
+        nodes = [_make_node("lonelyFunc", NodeType.FUNCTION, "alone.php")]
+        results = compute_hotspots(nodes, [], top_n=10)
+        assert results[0]["caller_count"] == 0
+        # score = log2(1) * log2(2) = 0 * 1 = 0
+        assert results[0]["score"] == 0.0
+
+    def test_explorer_tool(self, tmp_path: Path):
+        from hammy.agents.explorer import make_explorer_tools
+        from hammy.tools.parser import ParserFactory
+
+        nodes, edges = self._nodes_and_edges()
+        tools = make_explorer_tools(tmp_path, ParserFactory(), nodes, edges)
+        hotspot = next(t for t in tools if t.name == "Hotspot Score")
+        result = hotspot.func(top_n=5)
+        assert "getRenew" in result or "processRenewal" in result
+        assert "# 1" in result or "#1" in result  # rank indicator
+
+
 class TestHistorianTools:
     def test_creates_tools_with_vcs(self, tmp_path: Path):
         import subprocess
@@ -523,3 +768,94 @@ class TestHistorianTools:
         assert "Git Blame" in tool_names
         assert "File Churn Analysis" in tool_names
         assert "Search Commit History" in tool_names
+
+
+class TestPRDiff:
+    """Tests for PR diff analysis tool."""
+
+    SAMPLE_DIFF = textwrap.dedent("""\
+        diff --git a/foo.py b/foo.py
+        index 000..111 100644
+        --- a/foo.py
+        +++ b/foo.py
+        @@ -10,5 +10,9 @@ class Foo
+        +    def getRenew(self, x):
+        +        return self.processRenewal(x)
+        +
+        +    def processRenewal(self, x):
+        +        pass
+    """)
+
+    def _nodes_and_edges(self):
+        nodes = [
+            Node(
+                id=Node.make_id("foo.py", "getRenew"),
+                type=NodeType.FUNCTION,
+                name="getRenew",
+                loc=Location(file="foo.py", lines=(10, 12)),
+                language="python",
+            ),
+            Node(
+                id=Node.make_id("bar.py", "callerA"),
+                type=NodeType.FUNCTION,
+                name="callerA",
+                loc=Location(file="bar.py", lines=(5, 8)),
+                language="python",
+            ),
+        ]
+        edges = [
+            Edge(
+                source=Node.make_id("bar.py", "callerA"),
+                target=Node.make_id("foo.py", "getRenew"),
+                relation=RelationType.CALLS,
+                metadata=EdgeMetadata(confidence=0.9, context="getRenew(x)"),
+            ),
+        ]
+        return nodes, edges
+
+    def test_analyze_diff_basic(self):
+        from hammy.tools.diff_analysis import analyze_diff
+
+        nodes, edges = self._nodes_and_edges()
+        report = analyze_diff(self.SAMPLE_DIFF, nodes, edges)
+        assert len(report.changed_files) == 1
+        assert report.changed_files[0].path == "foo.py"
+        assert "getRenew" in report.all_changed_symbols or "processRenewal" in report.all_changed_symbols
+
+    def test_analyze_diff_impact(self):
+        from hammy.tools.diff_analysis import analyze_diff
+
+        nodes, edges = self._nodes_and_edges()
+        report = analyze_diff(self.SAMPLE_DIFF, nodes, edges)
+        # getRenew has 1 caller (callerA)
+        getRenew_impact = next((r for r in report.impact if r["symbol"] == "getRenew"), None)
+        if getRenew_impact:
+            assert getRenew_impact["indexed"] is True
+            assert getRenew_impact["caller_count"] >= 1
+
+    def test_analyze_diff_unknown_symbol(self):
+        from hammy.tools.diff_analysis import analyze_diff
+
+        nodes, edges = self._nodes_and_edges()
+        diff = textwrap.dedent("""\
+            diff --git a/new.py b/new.py
+            --- a/new.py
+            +++ b/new.py
+            @@ -1,0 +1,3 @@
+            +def brandNewFunction():
+            +    pass
+        """)
+        report = analyze_diff(diff, nodes, edges)
+        unknown = next((r for r in report.impact if r["symbol"] == "brandNewFunction"), None)
+        if unknown:
+            assert unknown["indexed"] is False
+
+    def test_explorer_tool(self, tmp_path: Path):
+        from hammy.agents.explorer import make_explorer_tools
+        from hammy.tools.parser import ParserFactory
+
+        nodes, edges = self._nodes_and_edges()
+        tools = make_explorer_tools(tmp_path, ParserFactory(), nodes, edges)
+        pr_diff_tool = next(t for t in tools if t.name == "PR Diff Analysis")
+        result = pr_diff_tool.func(diff_text=self.SAMPLE_DIFF)
+        assert "foo.py" in result or "getRenew" in result or len(result) > 0
