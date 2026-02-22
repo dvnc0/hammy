@@ -70,9 +70,14 @@ def create_mcp_server(
     mcp = FastMCP(
         name="hammy",
         instructions=(
-            "Hammy is a codebase intelligence engine. Use its tools to explore "
-            "code structure, search for symbols, analyze VCS history, and find "
-            "cross-language connections in the codebase."
+            "Hammy is a codebase intelligence engine with a pre-built symbol graph and call index. "
+            "Default search order: lookup_symbol (known name) → search_symbols (fuzzy name) → "
+            "search_code_hybrid (concept + name mixed). "
+            "Before any refactor: impact_analysis to see blast radius, hotspot_score to check risk. "
+            "For cross-language questions: find_bridges. "
+            "For PR review: pr_diff. "
+            "For 'who calls X': find_usages. "
+            "For 'find all X that match shape Y': structural_search."
         ),
     )
 
@@ -81,8 +86,9 @@ def create_mcp_server(
     @mcp.tool(
         name="ast_query",
         description=(
-            "Query the AST of a specific file. Returns structured information "
-            "about classes, functions, methods, endpoints, and imports."
+            "You know the file, now see what's in it. Returns every class, function, "
+            "method, endpoint, and import with line numbers, visibility, and LLM summaries. "
+            "Use query_type to focus: 'classes', 'functions', 'methods', 'endpoints', or 'imports'."
         ),
     )
     def ast_query(file_path: str, query_type: str = "all") -> str:
@@ -140,12 +146,10 @@ def create_mcp_server(
     @mcp.tool(
         name="search_symbols",
         description=(
-            "Search for code symbols (classes, functions, methods) by name or keyword. "
-            "Results are ranked: exact name matches appear first, then prefix matches, "
-            "then substring matches, then summary matches. "
-            "Use node_type to narrow to a specific kind (class/function/method/endpoint). "
-            "Use file_filter to restrict to a directory or filename substring. "
-            "For exact definition lookup of a known symbol, prefer lookup_symbol instead."
+            "You're thinking of a symbol name but don't know the exact spelling or where it lives. "
+            "Ranked by match quality (exact > prefix > substring > summary match) so the best hit "
+            "comes first. Use node_type or file_filter to narrow. "
+            "If you already know the exact name, use lookup_symbol — it's faster and returns full detail."
         ),
     )
     def search_symbols(
@@ -206,10 +210,10 @@ def create_mcp_server(
     @mcp.tool(
         name="find_usages",
         description=(
-            "Find all call sites of a specific function or method by exact name. "
-            "Uses word-boundary matching so 'save' won't match 'saveAll' or 'isSaved'. "
-            "Use file_filter to restrict results to a directory or filename substring. "
-            "Returns the containing function/method and file location for each call site."
+            "'Where is this called?' Use before changing a function signature, removing a method, "
+            "or any time you need to know every dependency before touching something. "
+            "Word-boundary matched — 'save' won't match 'saveAll' or 'isSaved'. "
+            "Returns the containing function + file:line for each call site. More reliable than grep."
         ),
     )
     def find_usages(symbol_name: str, file_filter: str = "") -> str:
@@ -257,10 +261,10 @@ def create_mcp_server(
     @mcp.tool(
         name="lookup_symbol",
         description=(
-            "Look up the exact definition of a known symbol by its precise name. "
-            "Returns the file, line numbers, parameters, return type, and visibility. "
-            "Use this when you know the exact name (e.g. 'getRenew', 'UserController'). "
-            "For fuzzy/keyword search, use search_symbols instead."
+            "You know the exact name — get the full definition: file, line range, parameters, "
+            "return type, visibility, async flag, and LLM summary. "
+            "Faster and more complete than search_symbols for known names. "
+            "Falls back to word-boundary partial match if no exact hit is found."
         ),
     )
     def lookup_symbol(name: str, node_type: str = "") -> str:
@@ -315,7 +319,11 @@ def create_mcp_server(
 
     @mcp.tool(
         name="list_files",
-        description="List all indexed files, optionally filtered by language.",
+        description=(
+            "Orient yourself on an unfamiliar codebase. Shows every indexed file with its language. "
+            "Good first call to understand scope before searching, or to find which directory "
+            "contains a subsystem you're about to explore."
+        ),
     )
     def list_files(language: str = "") -> str:
         """List indexed files.
@@ -342,11 +350,11 @@ def create_mcp_server(
     @mcp.tool(
         name="impact_analysis",
         description=(
-            "Analyse the blast radius of changing a function or method. "
-            "Traverses the call graph to show what code depends on a symbol (callers) "
-            "or what the symbol depends on (callees), up to N hops deep. "
-            "Use direction='callers' (default) to answer 'if I change X, what breaks?', "
-            "direction='callees' to see what X depends on, or direction='both' for full neighbourhood."
+            "'If I change this, what breaks?' Traverses the call graph N hops deep to map the full "
+            "dependency chain — not just direct callers but everything downstream. "
+            "Use direction='callers' (default) before any refactor; direction='callees' to see what "
+            "a symbol depends on; direction='both' for the full neighbourhood. "
+            "Turns 'I hope I found everything' into a concrete list."
         ),
     )
     def impact_analysis(
@@ -460,11 +468,10 @@ def create_mcp_server(
     @mcp.tool(
         name="structural_search",
         description=(
-            "Filter code symbols by structural attributes: visibility, async, parameter count, "
-            "return type, name regex, file path, or complexity. "
-            "Examples: all public methods with 3+ params; async functions in controllers/; "
-            "methods returning bool; classes with complexity > 10. "
-            "All filters are optional and combine with AND. Leave blank to skip a filter."
+            "Find symbols by shape, not name. Use when you can describe what you're looking for "
+            "structurally: 'all public async methods in controllers/', 'functions with 4+ params "
+            "returning bool', 'high-complexity methods in the payment module'. "
+            "grep can't do this. All filters combine with AND; omit any you don't need."
         ),
     )
     def structural_search(
@@ -554,8 +561,9 @@ def create_mcp_server(
     @mcp.tool(
         name="find_bridges",
         description=(
-            "Find cross-language connections (e.g., JS fetch calls matching PHP routes). "
-            "Returns bridge relationships between frontend and backend code."
+            "You see a fetch('/api/users') in JS and need to find the PHP endpoint that handles it — "
+            "or vice versa. Resolves cross-language endpoint connections by matching URL patterns "
+            "across frontend calls and backend Route definitions."
         ),
     )
     def find_bridges() -> str:
@@ -577,10 +585,10 @@ def create_mcp_server(
     @mcp.tool(
         name="hotspot_score",
         description=(
-            "Rank code symbols by composite risk: caller_count × file_churn. "
-            "High-scoring symbols are both heavily depended upon AND frequently changed — "
-            "the highest-risk places to touch. Uses VCS history for churn when available. "
-            "Filter by node_type, language, or file_filter to focus on a subsystem."
+            "Before touching a subsystem, run this. Score = log(callers) × log(churn). "
+            "High score = heavily depended on AND frequently modified = highest risk to touch. "
+            "Score near 0 = safe island. Use file_filter to focus on the area you're about to change. "
+            "Pairs well with impact_analysis: hotspot tells you risk, impact tells you blast radius."
         ),
     )
     def hotspot_score(
@@ -647,7 +655,11 @@ def create_mcp_server(
 
     @mcp.tool(
         name="index_status",
-        description="Show the current index statistics — files, symbols, and languages.",
+        description=(
+            "Quick orientation: total symbols, files, edges, and languages indexed. "
+            "Call first on an unfamiliar project, or to confirm the index is populated "
+            "before running searches that would silently return nothing on an empty index."
+        ),
     )
     def index_status() -> str:
         """Show index stats."""
@@ -685,11 +697,10 @@ def create_mcp_server(
     @mcp.tool(
         name="reindex",
         description=(
-            "Re-index the codebase to pick up changes made since the server started. "
-            "Use this after modifying files to refresh search results. "
-            "Set update_qdrant=true to also update semantic search embeddings (slower). "
-            "Set enrich=true to generate LLM summaries for newly indexed symbols "
-            "(requires ANTHROPIC_API_KEY and update_qdrant=true)."
+            "You've edited files while the server is running and searches are returning stale results. "
+            "Refreshes the in-memory symbol index. Set update_qdrant=true to also refresh semantic "
+            "embeddings (slower, needed for search_code/search_code_hybrid to reflect changes). "
+            "Set enrich=true to generate LLM summaries for newly indexed symbols."
         ),
     )
     def reindex(update_qdrant: bool = False, enrich: bool = False) -> str:
@@ -750,8 +761,9 @@ def create_mcp_server(
         @mcp.tool(
             name="git_log",
             description=(
-                "Get commit history for a file or the entire repository. "
-                "Shows revision, date, author, message, and files changed."
+                "When was this last changed and by whom? Get commit history for a specific file "
+                "or the whole repo. Use when you need to understand whether code is actively "
+                "maintained, recently broken, or untouched for years."
             ),
         )
         def git_log(file_path: str = "", limit: int = 20) -> str:
@@ -782,8 +794,9 @@ def create_mcp_server(
         @mcp.tool(
             name="git_blame",
             description=(
-                "Get line-by-line authorship for a file. "
-                "Shows who last modified each line."
+                "Who wrote this line and when? Use when you need ownership context — "
+                "understanding intent, knowing who to ask about a tricky section, "
+                "or checking if a suspicious line was recent or ancient."
             ),
         )
         def git_blame(file_path: str) -> str:
@@ -811,8 +824,9 @@ def create_mcp_server(
         @mcp.tool(
             name="file_churn",
             description=(
-                "Analyze which files change most frequently. "
-                "High churn files are potential hotspots or areas of instability."
+                "Which files are the most unstable? High churn = actively changing or repeatedly fixed. "
+                "Use before diving into a module to know if you're entering stable ground or a churn zone. "
+                "Feeds into hotspot_score when you need per-symbol risk rather than per-file."
             ),
         )
         def file_churn(window_days: int = 90) -> str:
@@ -838,10 +852,10 @@ def create_mcp_server(
     @mcp.tool(
         name="pr_diff",
         description=(
-            "Analyse a pull request or diff to show what symbols changed and their blast radius. "
-            "Pass a raw unified diff via diff_text (paste from 'git diff' or GitHub), OR "
-            "provide base_ref (e.g. 'main', 'HEAD~3') to auto-compute the diff from VCS. "
-            "Returns: changed files, modified symbols, and their callers (who is affected)."
+            "'What's the risk of this PR?' Parses a unified diff, identifies every changed symbol, "
+            "and shows who depends on each one. Results are rated LOW/MED/HIGH by caller count. "
+            "Pass diff_text (paste from 'git diff' or GitHub) OR base_ref (e.g. 'main', 'HEAD~1') "
+            "to auto-compute from VCS. Use before merging to catch HIGH-risk changes early."
         ),
     )
     def pr_diff(
@@ -950,11 +964,10 @@ def create_mcp_server(
         @mcp.tool(
             name="search_code",
             description=(
-                "Semantic search through code symbols using natural language. "
-                "Best for conceptual queries like 'authentication logic' or 'database connection'. "
-                "Uses MMR (Maximal Marginal Relevance) to return diverse results from "
-                "different files/classes rather than many similar hits. "
-                "For exact symbol names, use lookup_symbol or search_symbols instead."
+                "You don't know the symbol name — describe what you're looking for in plain language. "
+                "'authentication logic', 'email sending', 'database connection pooling'. "
+                "Uses MMR so you get diverse results across different files rather than 5 variants "
+                "of the same thing. For known names, use lookup_symbol or search_symbols."
             ),
         )
         def search_code(
@@ -997,11 +1010,10 @@ def create_mcp_server(
         @mcp.tool(
             name="search_code_hybrid",
             description=(
-                "Hybrid search combining BM25 keyword matching with semantic embeddings. "
-                "Use when you want both exact keyword precision (e.g. variable names, method "
-                "names) AND conceptual similarity. Results are merged via Reciprocal Rank "
-                "Fusion so highly-ranked in either list floats to the top. "
-                "Prefer this over search_code when the query mixes exact terms and concepts."
+                "Best default search. Combines BM25 (catches exact identifiers like method names) "
+                "with semantic embeddings (catches conceptual matches), merged via RRF. "
+                "Use when the query mixes exact terms and concepts: 'sendPersonalInvite email logic'. "
+                "Pure semantic search misses exact names; pure keyword misses synonyms — this does both."
             ),
         )
         def search_code_hybrid(
@@ -1048,11 +1060,10 @@ def create_mcp_server(
         @mcp.tool(
             name="store_context",
             description=(
-                "Store a research finding or discovered context in the brain (persistent memory). "
-                "Each entry has a key for direct retrieval and is semantically indexed so related "
-                "findings can be discovered by concept. Upserting the same key overwrites the "
-                "previous entry. Use tags to group related findings (e.g. task name, sprint). "
-                "Sub-agents can retrieve this by key using recall_context."
+                "You've discovered something important that future tool calls or sub-agents will need. "
+                "Save it now so it survives across the session. Use when you find the 'why' behind "
+                "confusing code, map a non-obvious dependency, or complete a research step that "
+                "shouldn't be repeated. Retrieve later with recall_context(key=...)."
             ),
         )
         def store_context(
@@ -1080,10 +1091,10 @@ def create_mcp_server(
         @mcp.tool(
             name="recall_context",
             description=(
-                "Retrieve stored research from the brain. "
-                "Fetch by exact key for direct lookup, or use a natural language query "
-                "to find semantically related findings. Optionally filter by tag. "
-                "Use after store_context to hand off context to sub-agents or resume work."
+                "Check what's already been researched before doing it again. Fetch by exact key "
+                "for direct lookup, or describe what you're looking for to find semantically related "
+                "findings. Use at the start of a task to avoid duplicating prior investigation, "
+                "or to hand off a finding between sub-agents."
             ),
         )
         def recall_context(
@@ -1130,9 +1141,9 @@ def create_mcp_server(
         @mcp.tool(
             name="list_context",
             description=(
-                "List all keys and summaries stored in the brain. "
-                "Use to see what research has been accumulated, optionally filtered by tag. "
-                "Then use recall_context(key=...) to fetch the full content of any entry."
+                "See everything that's been stored in memory so far. "
+                "Use at the start of a new session or sub-task to check if prior research exists "
+                "before starting from scratch. Filter by tag to scope to a specific feature or sprint."
             ),
         )
         def list_context(tag: str = "") -> str:
@@ -1163,8 +1174,10 @@ def create_mcp_server(
         @mcp.tool(
             name="search_commits",
             description=(
-                "Semantic search through commit messages. "
-                "Finds commits related to a natural language topic."
+                "Find commits by meaning, not text match. Use when investigating the history of a "
+                "feature or bug: 'payment refactoring', 'auth session fix', 'rate limiter'. "
+                "Returns commits ranked by relevance so you find the right one even if the message "
+                "doesn't use your exact words."
             ),
         )
         def search_commits(query: str, limit: int = 10) -> str:

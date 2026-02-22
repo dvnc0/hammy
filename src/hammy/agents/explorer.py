@@ -27,7 +27,9 @@ def make_explorer_tools(
 
     @tool("AST Query")
     def ast_query(file_path: str, query_type: str = "all") -> str:
-        """Query the AST of a specific file. Returns structured information about code elements.
+        """You know the file — now see what's in it. Returns every class, function, method, endpoint,
+        and import with line numbers, visibility, and LLM summaries. Use query_type to focus:
+        'classes', 'functions', 'methods', 'endpoints', or 'imports'.
 
         Args:
             file_path: Path to the file (relative to project root).
@@ -83,13 +85,10 @@ def make_explorer_tools(
         node_type: str = "",
         file_filter: str = "",
     ) -> str:
-        """Search for code symbols by name or keyword with ranked results.
-
-        Results are ranked: exact name matches appear first, then prefix matches,
-        then substring matches, then summary matches. Use node_type to narrow to
-        a specific kind (class/function/method/endpoint). Use file_filter to restrict
-        to a directory or filename substring. For exact definition lookup of a known
-        symbol name, prefer lookup_symbol instead.
+        """You're thinking of a symbol name but don't know the exact spelling or location.
+        Ranked by match quality (exact > prefix > substring > summary) so the best hit comes first.
+        Use node_type or file_filter to narrow. If you already know the exact name, use
+        lookup_symbol — it's faster and returns full parameter/return type detail.
 
         Args:
             query: Search term (symbol name or keyword).
@@ -138,11 +137,9 @@ def make_explorer_tools(
 
     @tool("Lookup Symbol")
     def lookup_symbol(name: str, node_type: str = "") -> str:
-        """Look up the exact definition of a known symbol by its precise name.
-
-        Returns file, line numbers, parameters, return type, and visibility.
-        Use this when you know the exact name (e.g. 'getRenew', 'UserController').
-        For fuzzy/keyword search, use search_symbols instead.
+        """You know the exact name — get the full definition: file, line range, parameters,
+        return type, visibility, async flag, and LLM summary. Faster and more complete than
+        search_symbols for known names. Falls back to word-boundary partial match if no exact hit.
 
         Args:
             name: Exact symbol name to look up (case-insensitive).
@@ -204,14 +201,10 @@ def make_explorer_tools(
         min_complexity: int = 0,
         limit: int = 50,
     ) -> str:
-        """Filter code symbols by structural metadata.
-
-        Find symbols matching specific structural criteria. All filters are optional
-        and combine with AND. Examples:
-          - All public methods: visibility='public', node_type='method'
-          - Async functions in controllers: async_only=True, file_filter='controllers'
-          - Methods with 3+ params returning bool: min_params=3, return_type='bool'
-          - Complex functions: min_complexity=10, node_type='function'
+        """Find symbols by shape, not name. Use when you can describe what you're looking for
+        structurally: 'all public async methods in controllers/', 'functions with 4+ params
+        returning bool', 'high-complexity methods in the payment module'. grep can't do this.
+        All filters combine with AND; omit any you don't need.
 
         Args:
             node_type: 'class', 'function', 'method', or 'endpoint'.
@@ -284,11 +277,10 @@ def make_explorer_tools(
 
     @tool("Find Usages")
     def find_usages(symbol_name: str, file_filter: str = "") -> str:
-        """Find all call sites of a specific function or method by exact name.
-
-        Uses word-boundary matching so 'save' won't match 'saveAll' or 'isSaved'.
-        Use file_filter to restrict results to a directory or filename substring.
-        Returns the containing function/method and file location for each call site.
+        """'Where is this called?' Use before changing a function signature, removing a method,
+        or any time you need to know every dependency before touching something.
+        Word-boundary matched — 'save' won't match 'saveAll' or 'isSaved'.
+        Returns the containing function + file:line for each call site. More reliable than grep.
 
         Args:
             symbol_name: Exact name of the function/method to find call sites for.
@@ -338,13 +330,10 @@ def make_explorer_tools(
         node_type: str = "",
         limit: int = 10,
     ) -> str:
-        """Hybrid BM25 keyword + semantic search merged via Reciprocal Rank Fusion.
-
-        Combines exact keyword precision with conceptual similarity so results
-        are relevant both by name/term and by meaning. Use when the query mixes
-        exact identifiers (like variable names) with descriptive concepts.
-        Results come from the in-memory node index (BM25) and optionally from
-        Qdrant embeddings when available.
+        """Best default search. Combines BM25 (catches exact identifiers like method names)
+        with semantic embeddings (catches conceptual matches), merged via RRF.
+        Use when the query mixes exact terms and concepts: 'sendPersonalInvite email logic'.
+        Pure semantic misses exact names; pure keyword misses synonyms — this does both.
 
         Args:
             query: Keywords or natural language description.
@@ -389,17 +378,15 @@ def make_explorer_tools(
         depth: int = 3,
         direction: str = "callers",
     ) -> str:
-        """Analyse the blast radius of changing a function or method.
-
-        Traverses the call graph to show what code depends on a symbol (callers)
-        or what the symbol depends on (callees), up to N hops deep. Use this to
-        answer "if I change getRenew, what else is affected?"
+        """'If I change this, what breaks?' Traverses the call graph N hops deep to map the full
+        dependency chain — not just direct callers but everything downstream. Use before any refactor.
+        direction='callers' (default): what depends on X. direction='callees': what X depends on.
+        direction='both': full neighbourhood. Turns 'I hope I found everything' into a concrete list.
 
         Args:
             symbol_name: Exact name of the function/method to analyse.
             depth: How many hops to traverse (1=direct only, default 3).
-            direction: 'callers' (what depends on X), 'callees' (what X depends on),
-                       or 'both'.
+            direction: 'callers' (what depends on X), 'callees' (what X depends on), or 'both'.
         """
         from hammy.schema.models import RelationType
 
@@ -509,11 +496,10 @@ def make_explorer_tools(
         language: str = "",
         file_filter: str = "",
     ) -> str:
-        """Rank symbols by composite risk: caller count × file churn.
-
-        Hotspots are symbols that are both heavily depended upon (many callers)
-        and frequently modified (high churn). These are the highest-risk places
-        to touch in the codebase. Churn uses node.history.churn_rate when available.
+        """Before touching a subsystem, run this. Score = log(callers) × log(churn).
+        High score = heavily depended on AND frequently modified = highest risk to touch.
+        Score near 0 = safe island. Use file_filter to focus on the area you're about to change.
+        Pairs well with impact_analysis: hotspot tells you risk, impact tells you blast radius.
 
         Args:
             top_n: Number of top hotspots to return.
@@ -563,11 +549,10 @@ def make_explorer_tools(
         diff_text: str,
         depth: int = 2,
     ) -> str:
-        """Analyse a unified diff (from git diff or a PR) to show changed symbols and blast radius.
-
-        Parses the diff to find which functions/methods were modified, then runs
-        impact analysis to show who depends on each changed symbol. Use this to
-        understand the risk and scope of a PR before merging.
+        """'What's the risk of this PR?' Parses a unified diff, identifies every changed symbol,
+        and shows who depends on each one. Results are rated LOW/MED/HIGH by caller count.
+        Use before merging to catch HIGH-risk changes (5+ callers) early.
+        Paste the output of 'git diff' or copy from a GitHub PR.
 
         Args:
             diff_text: Raw unified diff text (paste from 'git diff' or GitHub PR).
@@ -624,9 +609,9 @@ def make_explorer_tools(
 
     @tool("Find Cross-Language Bridges")
     def find_bridges() -> str:
-        """Find all cross-language connections (e.g., JS fetch calls matching PHP routes).
-
-        Returns bridge relationships between frontend and backend code.
+        """You see a fetch('/api/users') in JS and need to find the PHP endpoint that handles it —
+        or vice versa. Resolves cross-language endpoint connections by matching URL patterns
+        across frontend calls and backend Route definitions.
         """
         from hammy.tools.bridge import resolve_bridges
 
@@ -646,10 +631,12 @@ def make_explorer_tools(
 
     @tool("List Files")
     def list_files(language: str = "") -> str:
-        """List all indexed files, optionally filtered by language.
+        """Orient yourself on an unfamiliar codebase. Shows every indexed file with its language.
+        Good first call to understand scope, or to find which directory contains the subsystem
+        you're about to explore.
 
         Args:
-            language: Optional language filter ('php' or 'javascript').
+            language: Optional language filter ('php', 'javascript', 'python', etc.).
         """
         files: dict[str, set[str]] = {}
         for node in all_nodes:

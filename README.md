@@ -2,6 +2,10 @@
 
 > Codebase Intelligence Engine — deep structural and historical context for AI coding agents
 
+<p align="center">
+  <img src="hammy_resized.jpg" alt="Hammy">
+</p>
+
 Hammy is a specialized intelligence layer that gives AI coding agents a high-fidelity "brain" for understanding complex, multi-language codebases. It parses source code into a queryable property graph, tracks version control history, and exposes everything through an MCP server and CrewAI agent tools.
 
 ## Features
