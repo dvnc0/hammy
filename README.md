@@ -6,38 +6,41 @@
   <img src="hammy_resized.jpg" alt="Hammy">
 </p>
 
-Hammy is a specialized intelligence layer that gives AI coding agents a high-fidelity "brain" for understanding complex, multi-language codebases. It parses source code into a queryable property graph, tracks version control history, and exposes everything through an MCP server and CrewAI agent tools.
+Hammy gives AI coding agents a high-fidelity map of your codebase. It parses source code into a queryable call graph, tracks version control history, and exposes everything through an MCP server — so agents spend less time guessing and more time doing.
+
+**Best on:** legacy monoliths, team codebases, anything where "just grep it" stops working.
+
+---
+
+## Why Hammy?
+
+Most coding agents navigate by reading files and hoping for the best. Hammy gives them:
+
+- **A call graph** — not just "this function exists" but "these 12 things call it, and here's what it calls"
+- **Risk signals** — which code is high-churn AND heavily depended on (the landmines)
+- **Blast radius** — before changing anything, know exactly what breaks
+- **Orientation** — understand a 200-file module in one call instead of reading every file
+
+---
 
 ## Features
 
 - **Multi-language AST parsing** — PHP, JavaScript, TypeScript, Python, Go (Tree-sitter based)
-- **Cross-language bridge detection** — links `fetch('/api/users')` in JS to `#[Route('/api/users')]` in PHP
-- **Call graph tracking** — indexes function call sites so you can find all callers of any symbol
-- **Semantic + hybrid search** — dense vector search (Qdrant) combined with BM25 via Reciprocal Rank Fusion
-- **Structural search** — filter symbols by visibility, async, param count, return type, file, complexity
-- **Impact analysis** — N-hop call graph traversal to find the blast radius of any change
-- **PR diff analysis** — parse a unified diff, extract changed symbols, compute their blast radius
-- **Hotspot scoring** — rank symbols by `log(callers) × log(churn)` to surface high-risk code
-- **LLM enrichment** — auto-generate summaries for every indexed function and class
-- **Brain / memory layer** — agents can store and recall context across sessions in Qdrant
-- **Watch mode** — incremental re-indexing on file change (inotify/FSEvents via watchfiles)
-- **VCS integration** — Git log, blame, churn metrics; Mercurial scaffolded
-- **MCP server** — expose all tools over the Model Context Protocol for IDE/LLM client use
-- **Smart ignore system** — four-layer filtering: defaults → .gitignore → .hgignore → .hammyignore
+- **Full call expression indexing** — stores `$this->resolve(PaymentService::class)` not just `resolve`, enabling argument-level filtering
+- **Cross-language bridge detection** — links `fetch('/api/users')` in JS to the backend handler
+- **Semantic + hybrid search** — dense vector search (Qdrant) + BM25, merged via Reciprocal Rank Fusion
+- **Structural search** — filter by visibility, async, param count, return type, complexity score
+- **Impact analysis** — N-hop call graph traversal: know the full blast radius before touching anything
+- **PR diff analysis** — parse a unified diff (or auto-diff uncommitted changes), get HIGH/MED/LOW risk per changed symbol
+- **Hotspot scoring** — `log(callers) × log(churn)`: surfaces code that's both heavily depended on AND frequently modified
+- **LLM enrichment** — auto-generate plain-English summaries for every indexed function and class
+- **Brain / memory layer** — agents store and recall research findings across sessions (invaluable on large codebases)
+- **Watch mode** — incremental re-indexing on file change
+- **VCS integration** — Git log, blame, churn; Mercurial scaffolded
+- **MCP server** — all tools available to any MCP client (Cursor, Claude Desktop, VS Code, etc.)
+- **Smart ignore** — four-layer filtering: defaults → .gitignore → .hgignore → .hammyignore
 
-## Architecture
-
-Hammy represents codebases as a property graph:
-
-- **Nodes** — files, classes, functions, methods, endpoints
-- **Edges** — calls, imports, bridges between languages, API endpoint links
-- **Metadata** — line numbers, complexity, visibility, churn rate, LLM summaries
-
-A multi-agent system built on CrewAI answers queries by coordinating:
-
-- **The Explorer** — maps code structure, searches symbols, traces call graphs
-- **The Historian** — analyzes VCS history for authorship, churn, and temporal patterns
-- **The Dispatcher** — coordinates agents and synthesizes context packs
+---
 
 ## Installation
 
@@ -55,54 +58,218 @@ docker compose up -d
 uv tool install --editable .
 ```
 
+---
+
 ## Quick Start
 
 ```bash
-# Initialize Hammy config in your project
+# Point Hammy at your project
 hammy init /path/to/your/project
 
 # Index the codebase
 cd /path/to/your/project
 hammy index
 
-# Query with the AI agent
-hammy query "Where is the payment processing logic and who calls it?"
-
-# Check what was indexed
-hammy status
-
-# Start the MCP server (for IDE / LLM client integration)
+# Start the MCP server (connect from your IDE)
 hammy serve
 
-# Watch for file changes and re-index incrementally
+# Query with the AI agent directly
+hammy query "Where is the payment processing logic and who calls it?"
+
+# Watch for changes and re-index incrementally
 hammy watch
 ```
 
+---
+
 ## MCP Tools
 
-When running `hammy serve`, all tools are available to any MCP client (Cursor, Claude Desktop, etc.):
+All tools are available via `hammy serve` to any MCP client. Grouped by what you're trying to do:
 
-| Tool | Description |
-|---|---|
-| `ast_query` | Parse a file and return its full symbol tree |
-| `search_symbols` | Keyword search over symbol names |
-| `search_code_hybrid` | BM25 + dense hybrid search with RRF fusion |
-| `lookup_symbol` | Fetch full detail for a specific symbol by name |
-| `find_usages` | Find all call sites for a symbol name |
-| `impact_analysis` | N-hop caller/callee traversal for a symbol |
-| `structural_search` | Filter by visibility, async, param count, return type, complexity |
-| `hotspot_score` | Rank symbols by caller count × churn rate |
-| `pr_diff` | Parse a unified diff and compute blast radius of each changed symbol |
-| `find_bridges` | Find cross-language endpoint connections |
-| `list_files` | List indexed files with node counts |
-| `index_status` | Overview of total nodes, edges, and languages |
-| `git_log` | Recent commit history |
-| `git_blame` | Blame for a file |
-| `file_churn` | Commit frequency per file over a time window |
-| `search_commits` | Semantic search over commit messages |
-| `store_context` | Save agent context to memory (requires Qdrant) |
-| `recall_context` | Retrieve relevant saved context |
-| `list_context` | List all stored memory entries |
+### Orientation — understand unfamiliar code fast
+
+#### `explain_symbol` ⭐
+**The single most useful tool.** One call returns everything about a symbol: full definition (file, line, params, return type, visibility, async, LLM summary), direct callers, direct callees, sibling symbols in the same file, and recent commits. Replaces `lookup_symbol` + `find_usages` + `impact_analysis` + `ast_query` in a single round trip.
+
+```
+explain_symbol("PaymentService")
+→ definition, 8 callers, 3 callees, 12 siblings, last 5 commits
+```
+
+#### `module_summary`
+**Orient yourself on a directory without opening a single file.** Groups all symbols under a path into a structured table of contents — classes with nested methods first, then functions — across every file in the directory. Use this before diving into an unfamiliar module.
+
+```
+module_summary("app/Services/Payment/")
+→ 3 files, 47 symbols, organized by class hierarchy
+```
+
+#### `ast_query`
+Parse any file and see its full symbol tree: every class, method, function, endpoint, and import with line numbers, visibility, and LLM summaries. Filter by type (`classes`, `functions`, `methods`, `endpoints`, `imports`).
+
+#### `list_files`
+List every indexed file with its language. Good first call on an unfamiliar project to understand scope before searching.
+
+---
+
+### Search — find what you're looking for
+
+#### `search_symbols`
+Keyword search over symbol names, ranked by match quality (exact → prefix → substring → summary). Use when you know roughly what you're looking for but not the exact name.
+
+#### `lookup_symbol`
+You know the exact name — get the full definition immediately: file, line range, params, return type, visibility, async flag, and LLM summary. Falls back to word-boundary match if no exact hit.
+
+#### `lookup_symbols_batch`
+Look up multiple symbols in one call. Pass a comma-separated list, get all definitions back at once. Eliminates the `lookup_symbol` loop after a search result.
+
+```
+lookup_symbols_batch("UserController, PaymentService, getRenew")
+→ 3 full definitions in one call
+```
+
+#### `search_code_hybrid`
+Combines BM25 (exact identifiers) with semantic embeddings (conceptual matches), merged via RRF. Use when your query mixes exact terms and concepts: `"sendPersonalInvite email logic"`. Requires Qdrant.
+
+#### `structural_search`
+Find symbols by shape, not name. Useful for refactoring sprints and code reviews.
+
+```
+structural_search(node_type="method", visibility="public", min_params=4)
+→ all public methods with 4+ parameters
+
+structural_search(min_complexity=15, file_filter="Services/")
+→ high-complexity methods in the services layer
+```
+
+Parameters: `node_type`, `language`, `visibility`, `async_only`, `min_params`, `max_params`, `return_type`, `name_pattern`, `file_filter`, `min_complexity`, `limit`
+
+---
+
+### Call Graph — trace dependencies
+
+#### `find_usages`
+Find every call site for a function or method. Word-boundary matched so `save` won't match `saveAll`. Now with `argument_filter` to narrow by what's passed in — critical for dependency-injection heavy codebases.
+
+```
+find_usages("resolve", argument_filter="PaymentService")
+→ only calls to resolve() that pass PaymentService, not the other 40
+```
+
+Parameters: `symbol_name`, `file_filter`, `argument_filter`
+
+#### `impact_analysis`
+**"If I change this, what breaks?"** Traverses the call graph N hops deep. Use `direction="callers"` before any refactor to map the full dependency chain. Use `direction="callees"` to see what a function depends on. Use `direction="both"` for the full neighbourhood.
+
+```
+impact_analysis("charge", depth=3, direction="callers")
+→ everything downstream that will break
+```
+
+#### `find_bridges`
+Finds cross-language endpoint connections — e.g. links a `fetch('/api/v1/users')` in React to the backend route handler. Useful when tracing frontend→backend flows.
+
+---
+
+### Risk — know before you touch
+
+#### `hotspot_score` ⭐
+**Mandatory pre-work before any significant change.** Scores each symbol by `log(callers) × log(churn)`. High score = heavily depended on AND frequently modified = highest risk. Near zero = safe to change. Run this before touching any unfamiliar code.
+
+```
+hotspot_score(file_filter="app/Services/", top_n=10)
+→ ranked list of landmines in the services layer
+```
+
+#### `pr_diff`
+**"What's the risk of this PR?"** Parses a diff, identifies every changed symbol, and rates each one LOW/MED/HIGH based on caller count. Accepts raw diff text, a base ref, or `working_tree=True` to automatically diff your uncommitted changes.
+
+```
+pr_diff(working_tree=True)              # analyse uncommitted changes
+pr_diff(base_ref="main")               # compare branch against main
+pr_diff(diff_text="<paste from GitHub>") # analyse a PR diff
+```
+
+---
+
+### VCS History — understand context and ownership
+
+#### `git_log`
+Recent commit history for a file or the whole repo. Shows what changed, when, and by whom.
+
+#### `git_blame`
+Line-by-line authorship. Use when you need to understand intent, know who to ask about a tricky section, or check whether a suspicious line is recent or ancient.
+
+#### `file_churn`
+Commit frequency per file over a time window. High churn = actively changing or repeatedly fixed. Run before diving into a module to know whether you're on stable ground or in a churn zone.
+
+---
+
+### Semantic Memory — retain research across sessions *(requires Qdrant)*
+
+#### `store_context`
+Save a research finding to persistent memory with a key, tags, and source files. Sub-agents and future sessions can retrieve it instantly instead of re-researching.
+
+```
+store_context(
+  key="auth-flow-research",
+  content="Authentication touches 40 files. Entry point is AuthController::login...",
+  tags="auth,sprint-42"
+)
+```
+
+#### `recall_context`
+Retrieve stored research by exact key or semantic query.
+
+#### `list_context`
+List all stored memory entries with their tags and timestamps.
+
+---
+
+### Housekeeping
+
+#### `index_status`
+Quick orientation: total symbols, files, edges, and languages indexed. Call first on an unfamiliar project, or to confirm the index is populated before searching.
+
+#### `reindex`
+Refresh the in-memory symbol index after editing files. Pass `update_qdrant=true` to also refresh semantic embeddings. Pass `enrich=true` to generate LLM summaries for new symbols.
+
+---
+
+## Common Workflows
+
+**Before touching unfamiliar code:**
+```
+hotspot_score(file_filter="app/Services/Payment/")   # find the landmines
+explain_symbol("PaymentService")                      # understand the entry point
+impact_analysis("charge", depth=3)                    # map the blast radius
+```
+
+**Exploring an unfamiliar module:**
+```
+module_summary("app/Services/Payment/")              # table of contents
+lookup_symbols_batch("PaymentService, Webhook, StripeClient")  # drill into key symbols
+```
+
+**Before merging a PR:**
+```
+pr_diff(working_tree=True)                           # risk-rate your changes
+pr_diff(base_ref="main")                             # or compare against main
+```
+
+**Tracking DI dependencies:**
+```
+find_usages("resolve", argument_filter="PaymentService")  # who injects PaymentService
+find_usages("make", argument_filter="UserRepository")     # who creates UserRepository
+```
+
+**Planning a refactoring sprint:**
+```
+structural_search(min_complexity=15, node_type="method")  # find complexity hotspots
+structural_search(min_params=5, visibility="public")      # candidates for parameter objects
+```
+
+---
 
 ## Configuration
 
@@ -133,13 +300,7 @@ vcs:
 
 `.hammyignore` accepts standard gitignore syntax and is merged with `.gitignore`/`.hgignore`.
 
-## Use Cases
-
-- *"Where is `getRenew` called and what breaks if I change it?"* → `find_usages` + `impact_analysis`
-- *"What are the riskiest files to touch in this PR?"* → `pr_diff` with blast radius + hotspot scores
-- *"What endpoints does this React component call?"* → `find_bridges` maps fetch → PHP Route
-- *"Who owns the payment logic and when was it last changed?"* → `git_blame` + `file_churn`
-- *"Find all async functions that take more than 3 parameters"* → `structural_search`
+---
 
 ## Project Structure
 
@@ -166,14 +327,16 @@ hammy/
 │       ├── qdrant_tools.py # Qdrant embed, upsert, search, delete
 │       └── vcs.py          # Git/Mercurial wrapper
 ├── config/                 # Default configuration files
-├── tests/                  # 302 passing tests with fixtures
+├── tests/                  # 317 passing tests with fixtures
 └── docker-compose.yml      # Qdrant service
 ```
+
+---
 
 ## Development
 
 ```bash
-# Run the full test suite (Qdrant must be running)
+# Run the full test suite
 uv run pytest
 
 # Run with coverage
@@ -183,12 +346,16 @@ uv run pytest --cov=hammy --cov-report=term-missing
 uv run pytest tests/test_parser.py
 ```
 
+---
+
 ## Requirements
 
 - Python 3.11+
 - Docker (for Qdrant)
 - Git (for VCS analysis)
 - LLM API key (OpenAI, Anthropic, or any LiteLLM-compatible provider) for agent queries and enrichment
+
+---
 
 ## Built With
 

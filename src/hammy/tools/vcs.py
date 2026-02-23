@@ -100,6 +100,13 @@ class VCSWrapper:
         else:
             return self._run(["hg", "diff", "-r", rev1, "-r", rev2])
 
+    def diff_working_tree(self, base_ref: str = "HEAD") -> str:
+        """Diff working tree against a ref (equivalent to git diff <ref>)."""
+        if self.vcs_type == VCSType.GIT:
+            return self._run(["git", "diff", base_ref])
+        else:
+            return self._run(["hg", "diff", "-r", base_ref])
+
     # --- Git Implementation ---
 
     def _git_log(self, path: str | None, limit: int) -> list[CommitInfo]:

@@ -151,3 +151,16 @@ class TestDiff:
         commits = wrapper.log()
         diff = wrapper.diff(commits[2].revision, commits[0].revision)
         assert "hello" in diff or "world" in diff
+
+    def test_diff_working_tree_clean(self, git_repo: Path):
+        """Working tree diff against HEAD should be empty when no changes."""
+        wrapper = VCSWrapper(git_repo)
+        diff = wrapper.diff_working_tree("HEAD")
+        assert diff == "" or diff.strip() == ""
+
+    def test_diff_working_tree_with_changes(self, git_repo: Path):
+        """Working tree diff should show uncommitted modifications."""
+        (git_repo / "app.php").write_text("<?php echo 'modified';")
+        wrapper = VCSWrapper(git_repo)
+        diff = wrapper.diff_working_tree("HEAD")
+        assert "modified" in diff or "app.php" in diff

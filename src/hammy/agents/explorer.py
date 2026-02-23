@@ -187,6 +187,232 @@ def make_explorer_tools(
 
         return "\n\n".join(lines)
 
+    @tool("Explain Symbol")
+    def explain_symbol(name: str) -> str:
+        """Deep dive on one symbol in a single call — replaces lookup_symbol + find_usages +
+        impact_analysis + ast_query. Returns full definition, direct callers, direct callees,
+        sibling symbols in the same file, and recent commits.
+        Use whenever you need full context on any symbol.
+
+        Args:
+            name: Exact symbol name to explain (case-insensitive).
+        """
+        from hammy.schema.models import RelationType
+
+        name_lower = name.lower()
+        node_index = {n.id: n for n in all_nodes}
+        name_index: dict[str, list[Node]] = {}
+        for n in all_nodes:
+            name_index.setdefault(n.name.lower(), []).append(n)
+
+        matches = name_index.get(name_lower, [])
+        if not matches:
+            pattern = re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE)
+            matches = [n for n in all_nodes if pattern.search(n.name)]
+            if not matches:
+                return f"Symbol '{name}' not found."
+
+        call_edges = [e for e in all_edges if e.relation == RelationType.CALLS]
+        sections: list[str] = []
+
+        for sym in matches[:5]:
+            lines = [f"=== {sym.type.value}: {sym.name} ==="]
+            lines.append(f"file: {sym.loc.file}:{sym.loc.lines[0]}-{sym.loc.lines[1]}")
+            lines.append(f"language: {sym.language}")
+            if sym.meta.visibility:
+                lines.append(f"visibility: {sym.meta.visibility}")
+            if sym.meta.parameters:
+                lines.append(f"params: {', '.join(sym.meta.parameters)}")
+            if sym.meta.return_type:
+                lines.append(f"returns: {sym.meta.return_type}")
+            if sym.meta.is_async:
+                lines.append("async: true")
+            if sym.summary:
+                lines.append(f"summary: {sym.summary}")
+
+            # Use bare name (last segment after :: or \) since call expressions
+            # contain only the method name, not the fully-qualified node name
+            bare_name = re.split(r"::|\\", sym.name)[-1]
+            caller_pattern = re.compile(r"\b" + re.escape(bare_name) + r"\b", re.IGNORECASE)
+            callers = []
+            for edge in call_edges:
+                ctx = edge.metadata.context or ""
+                if caller_pattern.search(ctx):
+                    caller_node = node_index.get(edge.source)
+                    if caller_node:
+                        callers.append(caller_node)
+            callers = callers[:10]
+            if callers:
+                lines.append(f"\nCallers ({len(callers)} shown):")
+                for c in callers:
+                    lines.append(f"  {c.type.value}: {c.name} ({c.loc.file}:{c.loc.lines[0]})")
+            else:
+                lines.append("\nCallers: none found")
+
+            callees = []
+            for edge in call_edges:
+                if edge.source == sym.id:
+                    ctx = edge.metadata.context or ""
+                    m = re.findall(r'\b(\w+)\s*\(', ctx)
+                    callee_name_raw = m[-1] if m else re.split(r"[:\.\s]", ctx)[-1].strip()
+                    for n in name_index.get(callee_name_raw.lower(), []):
+                        callees.append((n, ctx))
+                        break
+            callees = callees[:10]
+            if callees:
+                lines.append(f"\nCallees ({len(callees)} shown):")
+                for c, ctx in callees:
+                    lines.append(f"  {c.type.value}: {c.name} ({c.loc.file}:{c.loc.lines[0]})")
+            else:
+                lines.append("\nCallees: none found")
+
+            type_priority = {NodeType.CLASS: 0, NodeType.METHOD: 1, NodeType.FUNCTION: 2}
+            siblings = [
+                n for n in all_nodes
+                if n.loc.file == sym.loc.file and n.id != sym.id
+            ]
+            siblings.sort(key=lambda n: (type_priority.get(n.type, 3), n.loc.lines[0]))
+            siblings = siblings[:10]
+            if siblings:
+                lines.append(f"\nSiblings in {sym.loc.file} ({len(siblings)} shown):")
+                for s in siblings:
+                    vis = f" [{s.meta.visibility}]" if s.meta.visibility else ""
+                    lines.append(f"  {s.type.value}: {s.name}{vis} (line {s.loc.lines[0]})")
+
+            sections.append("\n".join(lines))
+
+        return "\n\n".join(sections)
+
+    @tool("Module Summary")
+    def module_summary(
+        directory: str,
+        max_per_file: int = 10,
+        node_type: str = "",
+        language: str = "",
+    ) -> str:
+        """Orient yourself on a directory without calling ast_query on every file.
+        Groups all symbols under a directory into a structured table of contents:
+        classes with nested methods, then standalone functions.
+        Replaces list_files + N×ast_query for module-level exploration.
+
+        Args:
+            directory: Directory path prefix to filter by (e.g. 'app/Services/').
+            max_per_file: Maximum symbols to show per file (default 10).
+            node_type: Optional type filter ('class', 'function', 'method', 'endpoint').
+            language: Optional language filter.
+        """
+        dir_norm = directory.rstrip("/") + "/"
+        by_file: dict[str, list[Node]] = {}
+        for n in all_nodes:
+            file = n.loc.file
+            if not (file.startswith(dir_norm) or file.startswith(directory)):
+                continue
+            if node_type and n.type.value != node_type:
+                continue
+            if language and n.language != language:
+                continue
+            by_file.setdefault(file, []).append(n)
+
+        if not by_file:
+            return f"No symbols found under '{directory}'."
+
+        total_syms = sum(len(v) for v in by_file.values())
+        lines = [f"module: {directory}  ({len(by_file)} files, {total_syms} symbols)\n"]
+
+        for file in sorted(by_file.keys()):
+            file_nodes = by_file[file]
+            lang = file_nodes[0].language if file_nodes else ""
+            lines.append(f"{file}  [{lang}]")
+
+            classes = [n for n in file_nodes if n.type == NodeType.CLASS]
+            methods = [n for n in file_nodes if n.type == NodeType.METHOD]
+            functions = [n for n in file_nodes if n.type == NodeType.FUNCTION]
+            others = [n for n in file_nodes if n.type not in (NodeType.CLASS, NodeType.METHOD, NodeType.FUNCTION)]
+
+            shown = 0
+            for cls in classes:
+                if shown >= max_per_file:
+                    break
+                vis = f" [{cls.meta.visibility}]" if cls.meta.visibility else ""
+                summary = f" | {cls.summary}" if cls.summary else ""
+                lines.append(f"  class: {cls.name}{vis}{summary}")
+                shown += 1
+                cls_methods = [m for m in methods if shown < max_per_file]
+                for method in cls_methods[:5]:
+                    vis_m = f" [{method.meta.visibility}]" if method.meta.visibility else ""
+                    ret = f" -> {method.meta.return_type}" if method.meta.return_type else ""
+                    sum_m = f" | {method.summary}" if method.summary else ""
+                    lines.append(f"    method: {method.name}{vis_m}{ret}{sum_m}")
+                    shown += 1
+                remaining = len(methods) - min(5, len(methods))
+                if remaining > 0:
+                    lines.append(f"    + {remaining} more methods")
+
+            for fn in functions:
+                if shown >= max_per_file:
+                    break
+                vis = f" [{fn.meta.visibility}]" if fn.meta.visibility else ""
+                ret = f" -> {fn.meta.return_type}" if fn.meta.return_type else ""
+                summary = f" | {fn.summary}" if fn.summary else ""
+                lines.append(f"  function: {fn.name}{vis}{ret}{summary}")
+                shown += 1
+
+            for n in others:
+                if shown >= max_per_file:
+                    break
+                lines.append(f"  {n.type.value}: {n.name} (line {n.loc.lines[0]})")
+                shown += 1
+
+            total_in_file = len(file_nodes)
+            if total_in_file > max_per_file:
+                lines.append(f"  ... and {total_in_file - max_per_file} more symbols")
+            lines.append("")
+
+        return "\n".join(lines).rstrip()
+
+    @tool("Lookup Symbols Batch")
+    def lookup_symbols_batch(names: str) -> str:
+        """Look up multiple symbols in one call. Pass a comma-separated list of names
+        to get full definitions for all of them at once.
+        Replaces N×lookup_symbol after a search result. Cap: 20 names.
+
+        Args:
+            names: Comma-separated symbol names to look up (e.g. 'UserController, PaymentService').
+        """
+        name_list = [n.strip() for n in names.split(",") if n.strip()][:20]
+        if not name_list:
+            return "Provide at least one symbol name."
+
+        results: list[str] = []
+        for name in name_list:
+            name_lower = name.lower()
+            matches = [n for n in all_nodes if n.name.lower() == name_lower]
+            if not matches:
+                pattern = re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE)
+                matches = [n for n in all_nodes if pattern.search(n.name)]
+            if not matches:
+                results.append(f"Symbol '{name}' not found.")
+                continue
+            lines = []
+            for n in matches[:5]:
+                line = f"{n.type.value}: {n.name}"
+                line += f"\n  file: {n.loc.file}:{n.loc.lines[0]}-{n.loc.lines[1]}"
+                line += f"\n  language: {n.language}"
+                if n.meta.visibility:
+                    line += f"\n  visibility: {n.meta.visibility}"
+                if n.meta.parameters:
+                    line += f"\n  params: {', '.join(n.meta.parameters)}"
+                if n.meta.return_type:
+                    line += f"\n  returns: {n.meta.return_type}"
+                if n.meta.is_async:
+                    line += "\n  async: true"
+                if n.summary:
+                    line += f"\n  summary: {n.summary}"
+                lines.append(line)
+            results.append("\n\n".join(lines))
+
+        return "\n---\n".join(results)
+
     @tool("Structural Search")
     def structural_search(
         node_type: str = "",
@@ -276,7 +502,7 @@ def make_explorer_tools(
         return "\n\n".join(lines)
 
     @tool("Find Usages")
-    def find_usages(symbol_name: str, file_filter: str = "") -> str:
+    def find_usages(symbol_name: str, file_filter: str = "", argument_filter: str = "") -> str:
         """'Where is this called?' Use before changing a function signature, removing a method,
         or any time you need to know every dependency before touching something.
         Word-boundary matched — 'save' won't match 'saveAll' or 'isSaved'.
@@ -285,6 +511,7 @@ def make_explorer_tools(
         Args:
             symbol_name: Exact name of the function/method to find call sites for.
             file_filter: Optional path substring to restrict results (e.g. 'controllers/').
+            argument_filter: Optional substring to match against the call expression (e.g. 'Issue_Builder').
         """
         from hammy.schema.models import RelationType
 
@@ -297,6 +524,8 @@ def make_explorer_tools(
                 continue
             context = edge.metadata.context or ""
             if not pattern.search(context):
+                continue
+            if argument_filter and argument_filter.lower() not in context.lower():
                 continue
             source_node = node_index.get(edge.source)
             if source_node is None:
@@ -420,8 +649,9 @@ def make_explorer_tools(
                 if edge.source not in node_ids:
                     continue
                 ctx = edge.metadata.context or ""
-                # Extract callee name: last identifier in context (foo, obj.foo, Class::foo)
-                callee_name = re.split(r"[:\.\s]", ctx)[-1].strip() if ctx else ""
+                # Extract callee name: last function name before '(' in the call expression
+                _m = re.findall(r'\b(\w+)\s*\(', ctx)
+                callee_name = _m[-1] if _m else re.split(r"[:\.\s]", ctx)[-1].strip()
                 if not callee_name:
                     continue
                 for n in name_index.get(callee_name.lower(), []):
@@ -654,7 +884,7 @@ def make_explorer_tools(
 
         return "\n".join(lines)
 
-    core_tools = [ast_query, search_symbols, search_code_hybrid, lookup_symbol, structural_search, find_usages, impact_analysis, hotspot_score, pr_diff, find_bridges, list_files]
+    core_tools = [ast_query, search_symbols, search_code_hybrid, lookup_symbol, explain_symbol, module_summary, lookup_symbols_batch, structural_search, find_usages, impact_analysis, hotspot_score, pr_diff, find_bridges, list_files]
 
     if qdrant is None:
         return core_tools

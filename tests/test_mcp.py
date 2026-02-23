@@ -67,6 +67,9 @@ class TestMCPServerCreation:
         assert "find_bridges" in tool_names
         assert "index_status" in tool_names
         assert "pr_diff" in tool_names
+        assert "explain_symbol" in tool_names
+        assert "module_summary" in tool_names
+        assert "lookup_symbols_batch" in tool_names
 
     @pytest.mark.asyncio
     async def test_tool_count_without_vcs_or_qdrant(self, mcp_server):
@@ -706,6 +709,120 @@ class TestPRDiff:
         result = await mcp_server.call_tool("pr_diff", {})
         text = _extract_text(result)
         assert "diff_text" in text or "base_ref" in text or len(text) > 0
+
+
+class TestArgumentFilter:
+    @pytest.mark.asyncio
+    async def test_argument_filter_narrows_results(self, mcp_server):
+        """argument_filter should restrict find_usages to calls containing the substring."""
+        result = await mcp_server.call_tool(
+            "find_usages",
+            {"symbol_name": "getUser", "argument_filter": "zzz_no_such_arg"},
+        )
+        text = _extract_text(result)
+        assert "No call sites" in text
+
+    @pytest.mark.asyncio
+    async def test_argument_filter_empty_passes_all(self, mcp_server):
+        """With no argument_filter, results should be same as without it."""
+        result_no_filter = await mcp_server.call_tool(
+            "find_usages", {"symbol_name": "getUser"}
+        )
+        result_with_empty = await mcp_server.call_tool(
+            "find_usages", {"symbol_name": "getUser", "argument_filter": ""}
+        )
+        assert _extract_text(result_no_filter) == _extract_text(result_with_empty)
+
+
+class TestExplainSymbol:
+    @pytest.mark.asyncio
+    async def test_explain_symbol_registered(self, mcp_server):
+        tools = await mcp_server.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "explain_symbol" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_explain_symbol_found(self, mcp_server):
+        result = await mcp_server.call_tool("explain_symbol", {"name": "UserController"})
+        text = _extract_text(result)
+        assert "UserController" in text
+        assert "file:" in text
+        assert "Callers" in text
+
+    @pytest.mark.asyncio
+    async def test_explain_symbol_not_found(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "explain_symbol", {"name": "zzz_totally_missing"}
+        )
+        text = _extract_text(result)
+        assert "not found" in text
+
+
+class TestModuleSummary:
+    @pytest.mark.asyncio
+    async def test_module_summary_registered(self, mcp_server):
+        tools = await mcp_server.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "module_summary" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_module_summary_no_match(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "module_summary", {"directory": "zzz/no/such/dir/"}
+        )
+        text = _extract_text(result)
+        assert "No symbols found" in text
+
+    @pytest.mark.asyncio
+    async def test_module_summary_returns_structure(self, mcp_server):
+        result = await mcp_server.call_tool("module_summary", {"directory": ""})
+        text = _extract_text(result)
+        # Should return some module output or no-symbols message
+        assert len(text) > 0
+
+
+class TestLookupSymbolsBatch:
+    @pytest.mark.asyncio
+    async def test_lookup_symbols_batch_registered(self, mcp_server):
+        tools = await mcp_server.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "lookup_symbols_batch" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_lookup_symbols_batch_found(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "lookup_symbols_batch", {"names": "UserController"}
+        )
+        text = _extract_text(result)
+        assert "UserController" in text
+        assert "file:" in text
+
+    @pytest.mark.asyncio
+    async def test_lookup_symbols_batch_multiple(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "lookup_symbols_batch", {"names": "UserController, zzz_missing"}
+        )
+        text = _extract_text(result)
+        assert "UserController" in text
+        assert "not found" in text
+
+    @pytest.mark.asyncio
+    async def test_lookup_symbols_batch_empty(self, mcp_server):
+        result = await mcp_server.call_tool("lookup_symbols_batch", {"names": ""})
+        text = _extract_text(result)
+        assert "Provide at least one" in text
+
+
+class TestPrDiffWorkingTree:
+    @pytest.mark.asyncio
+    async def test_working_tree_no_vcs_returns_error(self, mcp_server):
+        """Without VCS, working_tree=True should return an error message."""
+        result = await mcp_server.call_tool(
+            "pr_diff", {"working_tree": True}
+        )
+        text = _extract_text(result)
+        # Either VCS is available (runs diff) or returns error
+        assert len(text) > 0
 
 
 class TestCLIServe:

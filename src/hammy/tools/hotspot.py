@@ -41,7 +41,8 @@ def _caller_counts(nodes: list[Node], edges: list[Edge]) -> dict[str, int]:
     for edge in call_edges:
         ctx = edge.metadata.context or ""
         # Extract the bare callee name from the context (last segment after . or ::)
-        bare = re.split(r"[:\.\s]", ctx)[-1].strip().lower()
+        m = re.findall(r'\b(\w+)\s*\(', ctx)
+        bare = (m[-1] if m else re.split(r"[:\.\s]", ctx)[-1].strip()).lower()
         if not bare:
             continue
         callee_callers.setdefault(bare, set()).add(edge.source)

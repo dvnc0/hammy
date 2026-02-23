@@ -241,11 +241,13 @@ def _extract_http_calls(
 
             callee_name = resolve_callee_name(callee_text)
             if callee_name:
+                full_expr = node.text.decode("utf-8") if node.text else callee_name
+                context_text = full_expr[:200]
                 edges.append(Edge(
                     source=source_id,
                     target=Node.make_id("", callee_name),
                     relation=RelationType.CALLS,
-                    metadata=EdgeMetadata(confidence=0.8, context=callee_name),
+                    metadata=EdgeMetadata(confidence=0.8, context=context_text),
                 ))
 
             if callee_text.startswith("http.") and callee_text in (

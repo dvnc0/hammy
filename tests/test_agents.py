@@ -254,7 +254,7 @@ class TestExplorerTools:
 
         factory = ParserFactory()
         tools = make_explorer_tools(tmp_path, factory, [], [])
-        assert len(tools) == 11
+        assert len(tools) == 14
         tool_names = [t.name for t in tools]
         assert "AST Query" in tool_names
         assert "Search Code Symbols" in tool_names
@@ -267,6 +267,9 @@ class TestExplorerTools:
         assert "PR Diff Analysis" in tool_names
         assert "Find Cross-Language Bridges" in tool_names
         assert "List Files" in tool_names
+        assert "Explain Symbol" in tool_names
+        assert "Module Summary" in tool_names
+        assert "Lookup Symbols Batch" in tool_names
         # Brain tools should NOT be present without qdrant
         assert "Store Context" not in tool_names
         assert "Recall Context" not in tool_names
@@ -279,7 +282,7 @@ class TestExplorerTools:
 
         mock_qdrant = MagicMock()
         tools = make_explorer_tools(tmp_path, ParserFactory(), [], [], qdrant=mock_qdrant)
-        assert len(tools) == 14
+        assert len(tools) == 17
         tool_names = [t.name for t in tools]
         assert "Store Context" in tool_names
         assert "Recall Context" in tool_names

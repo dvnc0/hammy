@@ -222,11 +222,13 @@ def _extract_calls(
 
         callee_name = resolve_callee_name(callee_text)
         if callee_name:
+            full_expr = node_text(node)
+            context_text = full_expr[:200] if full_expr else callee_name
             edges.append(Edge(
                 source=source_id,
                 target=Node.make_id("", callee_name),
                 relation=RelationType.CALLS,
-                metadata=EdgeMetadata(confidence=0.8, context=callee_name),
+                metadata=EdgeMetadata(confidence=0.8, context=context_text),
             ))
 
     for child in node.children:
