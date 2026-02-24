@@ -273,32 +273,82 @@ structural_search(min_params=5, visibility="public")      # candidates for param
 
 ## Configuration
 
+Each project keeps its own `hammy.yaml`. Hammy looks for it in two places (in order):
+
+1. `hammy.yaml` — directly in the project root (recommended)
+2. `config/hammy.yaml` — inside a config subdirectory (legacy)
+
+If neither exists, all defaults apply.
+
+### Per-project isolation
+
+**`project.name` is the key setting for multi-project setups.** Hammy uses it to derive a unique Qdrant collection prefix, so two projects on the same Qdrant instance never mix their indexes. Set it to something short and slug-friendly.
+
+```
+Project A: name: "storefront"   → collections: hammy_storefront_code_symbols, ...
+Project B: name: "admin-panel"  → collections: hammy_admin_panel_code_symbols, ...
+```
+
+If you need manual control (e.g. sharing an index between environments), set `qdrant.collection_prefix` explicitly — that always takes precedence over the derived name.
+
+### Full reference
+
 ```yaml
-# config/hammy.yaml
+# hammy.yaml  (place in project root)
+
 project:
-  name: "my-project"
-  root: "."
+  name: "my-project"   # Used to isolate Qdrant collections per project — set this!
+  root: "."            # Project root, relative to this config file
 
 parsing:
-  languages:
+  languages:           # Which languages to index (all enabled by default)
     - php
     - javascript
     - typescript
     - python
     - go
-  max_file_size_kb: 500
+  max_file_size_kb: 500  # Skip files larger than this
 
 qdrant:
   host: "localhost"
   port: 6333
-  embedding_model: "all-MiniLM-L6-v2"
+  collection_prefix: ""          # Leave blank to auto-derive from project.name (recommended)
+                                 # Set explicitly to override, e.g. "prod" or "shared-index"
+  embedding_model: "all-MiniLM-L6-v2"  # SentenceTransformer model for semantic search
 
 vcs:
-  max_commits: 5000
-  churn_window_days: 90
+  max_commits: 5000       # How far back to scan commit history
+  churn_window_days: 90   # Lookback window for hotspot churn scoring
+
+enrichment:
+  enabled: false          # Set true to auto-generate LLM summaries during indexing
+  provider: "anthropic"   # LiteLLM provider string (anthropic, openai, etc.)
+  model: "claude-haiku-4-5-20251001"  # Model to use for summaries
+  batch_size: 10          # Symbols enriched per API call
+  skip_if_summary: true   # Don't re-enrich symbols that already have summaries
+  max_symbols: 0          # Cap on symbols to enrich per run (0 = no limit)
+
+ignore:
+  use_gitignore: true     # Respect .gitignore
+  use_hgignore: true      # Respect .hgignore
+  use_hammyignore: true   # Respect .hammyignore
+  extra_patterns:         # Additional glob patterns to exclude
+    - "vendor/**"
+    - "*.generated.php"
 ```
 
-`.hammyignore` accepts standard gitignore syntax and is merged with `.gitignore`/`.hgignore`.
+### .hammyignore
+
+Create a `.hammyignore` in your project root using standard gitignore syntax. It's merged with `.gitignore` and `.hgignore` — anything excluded by any of the three files is skipped during indexing.
+
+```gitignore
+# .hammyignore
+vendor/
+node_modules/
+*.min.js
+storage/framework/
+bootstrap/cache/
+```
 
 ---
 

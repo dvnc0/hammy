@@ -53,7 +53,7 @@ def index_commits(
     ]
 
     if qdrant is None:
-        qdrant = QdrantManager(config.qdrant)
+        qdrant = QdrantManager(config.qdrant, project_name=config.project.name)
 
     qdrant.ensure_collections()
     result.commits_indexed = qdrant.upsert_commits(commit_dicts)

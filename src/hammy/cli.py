@@ -106,7 +106,7 @@ def index(
     qdrant = None
     if not no_qdrant:
         try:
-            qdrant = QdrantManager(config.qdrant)
+            qdrant = QdrantManager(config.qdrant, project_name=config.project.name)
             qdrant.ensure_collections()
         except Exception as e:
             console.print(f"[yellow]Warning:[/yellow] Qdrant not available ({e})")
@@ -250,7 +250,7 @@ def query(
     # Set up Qdrant if available
     qdrant = None
     try:
-        qdrant = QdrantManager(config.qdrant)
+        qdrant = QdrantManager(config.qdrant, project_name=config.project.name)
     except Exception:
         pass
 
@@ -311,7 +311,7 @@ def status(
 
     # Check Qdrant
     try:
-        qdrant = QdrantManager(config.qdrant)
+        qdrant = QdrantManager(config.qdrant, project_name=config.project.name)
         stats = qdrant.get_stats()
 
         qtable = Table(title="Qdrant Collections")
@@ -369,7 +369,7 @@ def watch(
     qdrant = None
     if not no_qdrant:
         try:
-            qdrant = QdrantManager(config.qdrant)
+            qdrant = QdrantManager(config.qdrant, project_name=config.project.name)
             qdrant.ensure_collections()
         except Exception as e:
             console.print(f"[yellow]Qdrant not available ({e}) — watching without embeddings.[/yellow]")

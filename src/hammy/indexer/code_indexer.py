@@ -86,7 +86,7 @@ def index_codebase(
 
     if store_in_qdrant and all_nodes:
         if qdrant is None:
-            qdrant = QdrantManager(config.qdrant)
+            qdrant = QdrantManager(config.qdrant, project_name=config.project.name)
         qdrant.ensure_collections()
         result.nodes_indexed = qdrant.upsert_nodes(all_nodes)
 
@@ -105,7 +105,7 @@ def index_codebase(
         # Re-upsert with enriched summaries so embeddings reflect the new text
         if store_in_qdrant and enriched_count > 0:
             if qdrant is None:
-                qdrant = QdrantManager(config.qdrant)
+                qdrant = QdrantManager(config.qdrant, project_name=config.project.name)
             qdrant.upsert_nodes(all_nodes)
 
     return result, all_nodes, all_edges

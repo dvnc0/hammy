@@ -44,7 +44,7 @@ def create_mcp_server(
     # Index the codebase
     qdrant: QdrantManager | None = None
     try:
-        qdrant = QdrantManager(config.qdrant)
+        qdrant = QdrantManager(config.qdrant, project_name=config.project.name)
         qdrant.ensure_collections()
     except Exception:
         qdrant = None

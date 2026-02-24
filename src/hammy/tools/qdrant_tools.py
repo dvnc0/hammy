@@ -34,12 +34,21 @@ class QdrantManager:
     BRAIN_COLLECTION = "brain"
     BATCH_SIZE = 500
 
-    def __init__(self, config: QdrantConfig | None = None):
+    def __init__(self, config: QdrantConfig | None = None, project_name: str = ""):
+        import re as _re
         if config is None:
             config = QdrantConfig()
 
         self._client = QdrantClient(host=config.host, port=config.port)
-        self._prefix = config.collection_prefix
+
+        # If no explicit prefix was set (still the default "hammy"), derive from project name
+        # so multiple projects don't share the same Qdrant collections.
+        if config.collection_prefix == "hammy" and project_name:
+            slug = _re.sub(r"[^a-z0-9]+", "_", project_name.lower()).strip("_")
+            self._prefix = f"hammy_{slug}"
+        else:
+            self._prefix = config.collection_prefix
+
         self._model = SentenceTransformer(config.embedding_model)
         self._embedding_dim = self._model.get_sentence_embedding_dimension()
 

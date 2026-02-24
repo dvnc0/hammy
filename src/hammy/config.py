@@ -80,13 +80,18 @@ class HammyConfig(BaseSettings):
 
     @classmethod
     def load(cls, project_root: Path | None = None) -> "HammyConfig":
-        """Load configuration, searching for config/hammy.yaml relative to project root."""
+        """Load configuration, searching for hammy.yaml in project root or config/ subdirectory."""
         if project_root is None:
             project_root = Path.cwd()
 
-        config_path = project_root / "config" / "hammy.yaml"
-        if config_path.exists():
-            config = cls.from_yaml(config_path)
+        # Check project root first, then config/ subdirectory
+        for candidate in (
+            project_root / "hammy.yaml",
+            project_root / "config" / "hammy.yaml",
+        ):
+            if candidate.exists():
+                config = cls.from_yaml(candidate)
+                break
         else:
             config = cls()
 
