@@ -35,6 +35,7 @@ class TestParserFactory:
         assert factory.detect_language(Path("file.py")) == "python"
         assert factory.detect_language(Path("file.ts")) == "typescript"
         assert factory.detect_language(Path("file.go")) == "go"
+        assert factory.detect_language(Path("file.cs")) == "csharp"
         assert factory.detect_language(Path("file.rb")) is None
 
     def test_parse_php_file(self):
@@ -456,6 +457,102 @@ class TestCommonJSExtraction:
         assert funcs["plainFunction"].meta.parameters == ["a", "b"]
 
 
+class TestCSharpExtraction:
+    @pytest.fixture
+    def cs_symbols(self):
+        factory = ParserFactory()
+        tree, lang = factory.parse_file(FIXTURES / "sample_csharp" / "PaymentController.cs")
+        return extract_symbols(tree, lang, "PaymentController.cs")
+
+    def test_extracts_class(self, cs_symbols):
+        nodes, _ = cs_symbols
+        classes = [n for n in nodes if n.type == NodeType.CLASS]
+        names = [c.name for c in classes]
+        assert "MyApp.Controllers.PaymentController" in names
+
+    def test_extracts_interface(self, cs_symbols):
+        nodes, _ = cs_symbols
+        interfaces = [n for n in nodes if n.type == NodeType.INTERFACE]
+        assert len(interfaces) == 1
+        assert interfaces[0].name == "MyApp.Controllers.IPaymentService"
+
+    def test_extracts_methods(self, cs_symbols):
+        nodes, _ = cs_symbols
+        methods = [n for n in nodes if n.type == NodeType.METHOD]
+        names = [m.name for m in methods]
+        assert "MyApp.Controllers.PaymentController.Charge" in names
+        assert "MyApp.Controllers.PaymentController.GetStatus" in names
+        assert "MyApp.Controllers.PaymentController.ValidateRequest" in names
+
+    def test_extracts_constructor(self, cs_symbols):
+        nodes, _ = cs_symbols
+        methods = [n for n in nodes if n.type == NodeType.METHOD]
+        names = [m.name for m in methods]
+        assert "MyApp.Controllers.PaymentController.PaymentController" in names
+
+    def test_async_detection(self, cs_symbols):
+        nodes, _ = cs_symbols
+        methods = {n.name: n for n in nodes if n.type == NodeType.METHOD}
+        assert methods["MyApp.Controllers.PaymentController.Charge"].meta.is_async is True
+        assert methods["MyApp.Controllers.PaymentController.GetStatus"].meta.is_async is True
+        assert methods["MyApp.Controllers.PaymentController.ValidateRequest"].meta.is_async is False
+
+    def test_visibility(self, cs_symbols):
+        nodes, _ = cs_symbols
+        methods = {n.name: n for n in nodes if n.type == NodeType.METHOD}
+        assert methods["MyApp.Controllers.PaymentController.Charge"].meta.visibility == "public"
+        assert methods["MyApp.Controllers.PaymentController.ValidateRequest"].meta.visibility == "private"
+
+    def test_return_type(self, cs_symbols):
+        nodes, _ = cs_symbols
+        methods = {n.name: n for n in nodes if n.type == NodeType.METHOD}
+        assert methods["MyApp.Controllers.PaymentController.Charge"].meta.return_type == "Task<IActionResult>"
+        assert methods["MyApp.Controllers.PaymentController.ValidateRequest"].meta.return_type == "bool"
+
+    def test_parameters(self, cs_symbols):
+        nodes, _ = cs_symbols
+        methods = {n.name: n for n in nodes if n.type == NodeType.METHOD}
+        assert "request" in methods["MyApp.Controllers.PaymentController.Charge"].meta.parameters
+        assert "id" in methods["MyApp.Controllers.PaymentController.GetStatus"].meta.parameters
+
+    def test_extracts_endpoint(self, cs_symbols):
+        nodes, _ = cs_symbols
+        endpoints = [n for n in nodes if n.type == NodeType.ENDPOINT]
+        assert len(endpoints) >= 1
+        names = [e.name for e in endpoints]
+        assert any("charge" in n for n in names)
+
+    def test_extracts_imports(self, cs_symbols):
+        _, edges = cs_symbols
+        imports = [e for e in edges if e.relation == RelationType.IMPORTS]
+        contexts = [e.metadata.context for e in imports]
+        assert any("System" in c for c in contexts)
+        assert any("Microsoft.AspNetCore.Mvc" in c for c in contexts)
+
+    def test_defines_edges(self, cs_symbols):
+        _, edges = cs_symbols
+        defines = [e for e in edges if e.relation == RelationType.DEFINES]
+        assert len(defines) >= 3  # ctor + Charge + GetStatus + ValidateRequest + endpoint
+
+    def test_extracts_calls(self, cs_symbols):
+        _, edges = cs_symbols
+        calls = [e for e in edges if e.relation == RelationType.CALLS]
+        contexts = [e.metadata.context for e in calls]
+        assert any("ChargeAsync" in c for c in contexts)
+        assert any("GetStatusAsync" in c for c in contexts)
+
+    def test_language_tag(self, cs_symbols):
+        nodes, _ = cs_symbols
+        assert all(n.language == "csharp" for n in nodes)
+
+    def test_parser_detects_cs_extension(self):
+        factory = ParserFactory()
+        result = factory.parse_file(FIXTURES / "sample_csharp" / "PaymentController.cs")
+        assert result is not None
+        _, lang = result
+        assert lang == "csharp"
+
+
 class TestCallTracking:
     """Test that CALLS edges are created when functions invoke other functions."""
 
@@ -503,6 +600,15 @@ class TestCallTracking:
         contexts = [c.metadata.context for c in calls]
         assert len(calls) >= 1
         assert any("http.Get" in c for c in contexts)
+
+    def test_csharp_calls(self):
+        factory = ParserFactory()
+        tree, lang = factory.parse_file(FIXTURES / "sample_csharp" / "PaymentController.cs")
+        _, edges = extract_symbols(tree, lang, "PaymentController.cs")
+        calls = [e for e in edges if e.relation == RelationType.CALLS]
+        contexts = [c.metadata.context for c in calls]
+        assert len(calls) >= 1
+        assert any("ChargeAsync" in c for c in contexts)
 
     def test_calls_have_confidence(self):
         factory = ParserFactory()

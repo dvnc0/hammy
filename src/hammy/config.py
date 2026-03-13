@@ -20,7 +20,7 @@ class ParsingConfig(BaseModel):
     """Settings for AST parsing."""
 
     languages: list[str] = Field(
-        default_factory=lambda: ["php", "javascript", "python", "typescript", "go"]
+        default_factory=lambda: ["php", "javascript", "python", "typescript", "go", "csharp"]
     )
     max_file_size_kb: int = 500
 

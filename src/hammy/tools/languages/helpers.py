@@ -104,6 +104,19 @@ CALL_NOISE = frozenset({
     "is_array", "is_string", "is_int", "array_map", "array_filter", "array_merge",
     "count", "strlen", "substr", "strpos", "sprintf", "implode", "explode",
     "json_encode", "json_decode", "intval", "floatval",
+    # C#
+    "Console.WriteLine", "Console.Write", "Console.ReadLine",
+    "string.IsNullOrEmpty", "string.IsNullOrWhiteSpace", "string.Format",
+    "string.Join", "string.Concat",
+    "Convert.ToInt32", "Convert.ToString", "Convert.ToBoolean", "Convert.ToDecimal",
+    "Math.Abs", "Math.Max", "Math.Min", "Math.Floor", "Math.Ceiling", "Math.Round",
+    "DateTime.Now", "DateTime.UtcNow", "DateTime.Parse",
+    "Enum.Parse", "Enum.GetValues",
+    "Task.FromResult", "Task.CompletedTask", "Task.WhenAll", "Task.WhenAny",
+    "Object.ReferenceEquals", "GC.Collect",
+    "nameof", "typeof", "sizeof",
+    "ArgumentNullException", "ArgumentException", "InvalidOperationException",
+    "NotImplementedException", "NotSupportedException",
 })
 
 

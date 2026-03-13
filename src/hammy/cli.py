@@ -27,20 +27,37 @@ def init(
     """Initialize Hammy configuration in a project directory."""
     path = path.resolve()
 
+    package_config = Path(__file__).parent.parent.parent / "config"
+
+    # hammy.yaml goes in the project root
+    hammy_yaml = path / "hammy.yaml"
+    if hammy_yaml.exists():
+        console.print(f"  [yellow]exists[/yellow]  hammy.yaml")
+    else:
+        src = package_config / "hammy.yaml"
+        if src.exists():
+            shutil.copy2(src, hammy_yaml)
+        else:
+            # Fallback: write a minimal default
+            hammy_yaml.write_text(
+                "project:\n"
+                '  name: "my-project"  # Used to isolate Qdrant collections — set this!\n'
+                '  root: "."\n'
+            )
+        console.print(f"  [green]created[/green] hammy.yaml")
+
+    # agents.yaml and tasks.yaml go in config/
     config_dir = path / "config"
     config_dir.mkdir(exist_ok=True)
 
-    # Copy default config files
-    package_config = Path(__file__).parent.parent.parent / "config"
-
-    for filename in ("hammy.yaml", "agents.yaml", "tasks.yaml"):
+    for filename in ("agents.yaml", "tasks.yaml"):
         src = package_config / filename
         dest = config_dir / filename
         if dest.exists():
-            console.print(f"  [yellow]exists[/yellow]  {dest.relative_to(path)}")
+            console.print(f"  [yellow]exists[/yellow]  config/{filename}")
         elif src.exists():
             shutil.copy2(src, dest)
-            console.print(f"  [green]created[/green] {dest.relative_to(path)}")
+            console.print(f"  [green]created[/green] config/{filename}")
         else:
             console.print(f"  [red]missing[/red] template: {filename}")
 
@@ -52,6 +69,7 @@ def init(
         hammyignore.write_text(
             "# Hammy custom ignore patterns\n"
             "# Uses .gitignore syntax\n"
+            ".hammy/\n"
             "*.min.js\n"
             "*.min.css\n"
             "*.map\n"
@@ -61,7 +79,8 @@ def init(
         console.print(f"  [green]created[/green] .hammyignore")
 
     console.print(f"\n[bold green]Hammy initialized in {path}[/bold green]")
-    console.print("Edit config/agents.yaml to set your LLM provider, then run: hammy index")
+    console.print("Edit hammy.yaml to set your project name, then edit config/agents.yaml to set your LLM provider.")
+    console.print("Run [bold]hammy index[/bold] to index the codebase.")
 
 
 @app.command()
@@ -191,6 +210,11 @@ def index(
         except Exception as e:
             console.print(f"[yellow]Commit indexing skipped:[/yellow] {e}")
 
+    # Save index cache
+    from hammy.indexer.index_cache import save_index
+    cache_file = save_index(path, nodes, edges)
+    console.print(f"\n[green]Index cache saved →[/green] {cache_file.relative_to(path)}")
+
     # Show bridge summary
     from hammy.tools.bridge import resolve_bridges
     bridges = resolve_bridges(nodes, edges)
@@ -241,11 +265,16 @@ def query(
                 )
                 raise typer.Exit(1)
 
-    # Quick index (parse only, no Qdrant storage)
-    with console.status("[bold blue]Parsing codebase..."):
-        _, nodes, edges = index_codebase(config, store_in_qdrant=False)
-
-    console.print(f"Parsed {len(nodes)} symbols from codebase.\n")
+    # Load from cache or fall back to full parse
+    from hammy.indexer.index_cache import load_index
+    cached = load_index(path)
+    if cached:
+        nodes, edges = cached
+        console.print(f"Loaded {len(nodes)} symbols from cache.\n")
+    else:
+        with console.status("[bold blue]Parsing codebase..."):
+            _, nodes, edges = index_codebase(config, store_in_qdrant=False)
+        console.print(f"Parsed {len(nodes)} symbols from codebase.\n")
 
     # Set up Qdrant if available
     qdrant = None
@@ -376,20 +405,27 @@ def watch(
 
     console.print(f"[bold blue]Hammy Watch[/bold blue]  {config.project.name}")
     console.print(f"  Project: {path}")
-    console.print("[dim]Performing initial index...[/dim]")
+    from hammy.indexer.index_cache import load_index
 
-    with console.status("[bold blue]Indexing..."):
-        result, all_nodes, all_edges = index_codebase(
-            config, qdrant=qdrant, store_in_qdrant=qdrant is not None
+    cached = load_index(path)
+    if cached:
+        all_nodes, all_edges = cached
+        console.print(f"  [green]Ready.[/green] Loaded {len(all_nodes)} symbols from cache.")
+    else:
+        console.print("[dim]No cache found — performing initial index...[/dim]")
+
+        with console.status("[bold blue]Indexing..."):
+            result, all_nodes, all_edges = index_codebase(
+                config, qdrant=qdrant, store_in_qdrant=qdrant is not None
+            )
+
+        console.print(
+            f"  [green]Ready.[/green] {result.files_processed} files | "
+            f"{result.nodes_extracted} symbols | "
+            f"{result.edges_extracted} edges"
         )
-
-    console.print(
-        f"  [green]Ready.[/green] {result.files_processed} files | "
-        f"{result.nodes_extracted} symbols | "
-        f"{result.edges_extracted} edges"
-    )
-    if qdrant is not None:
-        console.print(f"  Qdrant: {result.nodes_indexed} embeddings stored")
+        if qdrant is not None:
+            console.print(f"  Qdrant: {result.nodes_indexed} embeddings stored")
 
     console.print(f"\n[bold]Watching for changes[/bold] [dim](Ctrl+C to stop)[/dim]\n")
 

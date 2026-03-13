@@ -13,8 +13,10 @@ from mcp.server import FastMCP
 
 from hammy.config import HammyConfig
 from hammy.indexer.code_indexer import index_codebase
+from hammy.indexer.index_cache import load_index, save_index
 from hammy.schema.models import Edge, Node, NodeType, RelationType
 from hammy.tools.bridge import resolve_bridges
+from hammy.tools.hybrid_search import BM25Index, build_bm25_index
 from hammy.tools.parser import ParserFactory
 from hammy.tools.qdrant_tools import QdrantManager
 from hammy.tools.vcs import VCSWrapper
@@ -41,7 +43,7 @@ def create_mcp_server(
     if config is None:
         config = HammyConfig.load(project_root)
 
-    # Index the codebase
+    # Set up Qdrant
     qdrant: QdrantManager | None = None
     try:
         qdrant = QdrantManager(config.qdrant, project_name=config.project.name)
@@ -49,13 +51,23 @@ def create_mcp_server(
     except Exception:
         qdrant = None
 
-    _, initial_nodes, initial_edges = index_codebase(
-        config, qdrant=qdrant, store_in_qdrant=qdrant is not None
-    )
+    # Load from disk cache if available, otherwise full re-parse
+    cached = load_index(project_root)
+    if cached:
+        initial_nodes, initial_edges = cached
+    else:
+        _, initial_nodes, initial_edges = index_codebase(
+            config, qdrant=qdrant, store_in_qdrant=qdrant is not None
+        )
+        save_index(project_root, initial_nodes, initial_edges)
 
     # Use mutable lists so the reindex tool can update them in-place
     all_nodes: list[Node] = list(initial_nodes)
     all_edges: list[Edge] = list(initial_edges)
+
+    # Pre-built BM25 index — avoids re-tokenizing on every search query.
+    # Stored in a list so it can be replaced in-place by the reindex tool.
+    bm25_cache: list[BM25Index] = [build_bm25_index(all_nodes)]
 
     # Set up parser and VCS
     parser_factory = ParserFactory(config.parsing.languages)
@@ -70,14 +82,22 @@ def create_mcp_server(
     mcp = FastMCP(
         name="hammy",
         instructions=(
-            "Hammy is a codebase intelligence engine with a pre-built symbol graph and call index. "
-            "Default search order: lookup_symbol (known name) → search_symbols (fuzzy name) → "
-            "search_code_hybrid (concept + name mixed). "
-            "Before any refactor: impact_analysis to see blast radius, hotspot_score to check risk. "
-            "For cross-language questions: find_bridges. "
-            "For PR review: pr_diff. "
-            "For 'who calls X': find_usages. "
-            "For 'find all X that match shape Y': structural_search."
+            "Hammy is a codebase intelligence engine with a pre-built symbol graph and call index.\n\n"
+            "MEMORY — do this first and last:\n"
+            "  1. Start every investigation with recall_context to check if this has already been researched.\n"
+            "  2. After any significant finding (entry point located, dependency mapped, risk identified), "
+            "call store_context immediately — don't wait until the end. Future sub-agents and sessions depend on it.\n\n"
+            "SEARCH — default order:\n"
+            "  lookup_symbol (exact name) → search_symbols (fuzzy name) → search_code_hybrid (concept + name mixed).\n\n"
+            "BEFORE ANY CHANGE:\n"
+            "  impact_analysis (blast radius) → hotspot_score (risk level) → store findings in brain.\n\n"
+            "OTHER TOOLS:\n"
+            "  explain_symbol: full context on one symbol in one call — use before lookup_symbol + find_usages.\n"
+            "  module_summary: orient to a directory without opening files.\n"
+            "  find_usages(argument_filter=...): filter call sites by what's passed in (critical for DI codebases).\n"
+            "  find_bridges: cross-language endpoint connections.\n"
+            "  pr_diff: risk-rate a PR or uncommitted changes.\n"
+            "  structural_search: find symbols by shape (visibility, param count, complexity)."
         ),
     )
 
@@ -432,7 +452,13 @@ def create_mcp_server(
 
             sections.append("\n".join(lines))
 
-        return "\n\n".join(sections)
+        result = "\n\n".join(sections)
+        if qdrant is not None:
+            result += (
+                "\n\n💾 If this is useful for future work, save it: "
+                f"store_context(key='{name.lower().replace(' ', '-')}-research', content='...')"
+            )
+        return result
 
     @mcp.tool(
         name="module_summary",
@@ -725,7 +751,13 @@ def create_mcp_server(
                 else:
                     lines.append(f"\nTotal callees found: {total_c} across {hop} hop(s).")
 
-        return "\n".join(lines) if lines else f"No call graph data found for '{symbol_name}'."
+        out = "\n".join(lines) if lines else f"No call graph data found for '{symbol_name}'."
+        if qdrant is not None:
+            out += (
+                "\n\n💾 High blast radius? Save this before changing anything: "
+                f"store_context(key='{symbol_name.lower()}-impact', content='...')"
+            )
+        return out
 
     @mcp.tool(
         name="structural_search",
@@ -913,7 +945,13 @@ def create_mcp_server(
             if r["summary"]:
                 lines.append(f"     {r['summary']}")
 
-        return "\n\n".join(lines)
+        out = "\n\n".join(lines)
+        if qdrant is not None:
+            out += (
+                "\n\n💾 Save this risk map before touching anything: "
+                "store_context(key='hotspot-risk-map', content='...')"
+            )
+        return out
 
     @mcp.tool(
         name="index_status",
@@ -953,6 +991,17 @@ def create_mcp_server(
         bridges = resolve_bridges(all_nodes, all_edges)
         if bridges:
             lines.append(f"\nCross-language bridges: {len(bridges)}")
+
+        if qdrant is not None:
+            try:
+                brain_entries = qdrant.list_brain_entries()
+                count = len(brain_entries)
+                if count > 0:
+                    lines.append(f"\nBrain entries: {count} stored — call recall_context to load prior research.")
+                else:
+                    lines.append("\nBrain entries: none yet — use store_context to save findings across sessions.")
+            except Exception:
+                pass
 
         return "\n".join(lines)
 
@@ -994,6 +1043,8 @@ def create_mcp_server(
         all_nodes.extend(new_nodes)
         all_edges.clear()
         all_edges.extend(new_edges)
+        bm25_cache[0] = build_bm25_index(all_nodes)
+        save_index(project_root, all_nodes, all_edges)
 
         lines = [
             f"Reindex complete{qdrant_note}",
@@ -1308,6 +1359,7 @@ def create_mcp_server(
             results = hybrid_search(
                 query,
                 all_nodes,
+                bm25_index=bm25_cache[0],
                 qdrant=qdrant,
                 limit=limit,
                 language=language or None,
@@ -1332,10 +1384,12 @@ def create_mcp_server(
         @mcp.tool(
             name="store_context",
             description=(
-                "You've discovered something important that future tool calls or sub-agents will need. "
-                "Save it now so it survives across the session. Use when you find the 'why' behind "
-                "confusing code, map a non-obvious dependency, or complete a research step that "
-                "shouldn't be repeated. Retrieve later with recall_context(key=...)."
+                "Save a research finding so it survives across tool calls, sub-agents, and future sessions. "
+                "CALL THIS whenever you: locate the entry point for a feature, map a non-obvious dependency, "
+                "identify a risk or landmine, finish a research step that took multiple tool calls, or find "
+                "the 'why' behind confusing code. Save immediately — don't batch it for the end. "
+                "Set ttl_days for time-sensitive findings (sprint notes, PR context) so they auto-expire. "
+                "Retrieve later with recall_context(key='...')."
             ),
         )
         def store_context(
@@ -1343,6 +1397,7 @@ def create_mcp_server(
             content: str,
             tags: str = "",
             source_files: str = "",
+            ttl_days: int = 0,
         ) -> str:
             """Store a finding in the brain.
 
@@ -1351,22 +1406,31 @@ def create_mcp_server(
                 content: The discovered information to store.
                 tags: Comma-separated labels for grouping (e.g. 'payment,sprint-42').
                 source_files: Comma-separated file paths this entry relates to.
+                ttl_days: Days until this entry expires (0 = never expires). Use for
+                          time-sensitive findings like sprint context or PR-specific notes.
             """
+            from datetime import datetime, timedelta, timezone
+
             tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
             file_list = [f.strip() for f in source_files.split(",") if f.strip()] if source_files else []
 
-            qdrant.upsert_brain_entry(key, content, tags=tag_list, source_files=file_list)
+            expires_at = None
+            if ttl_days > 0:
+                expires_at = (datetime.now(timezone.utc) + timedelta(days=ttl_days)).isoformat()
+
+            qdrant.upsert_brain_entry(key, content, tags=tag_list, source_files=file_list, expires_at=expires_at)
 
             tag_note = f" [tags: {', '.join(tag_list)}]" if tag_list else ""
-            return f"Stored '{key}'{tag_note}. Retrieve with: recall_context(key='{key}')"
+            expiry_note = f" [expires in {ttl_days}d]" if expires_at else ""
+            return f"Stored '{key}'{tag_note}{expiry_note}. Retrieve with: recall_context(key='{key}')"
 
         @mcp.tool(
             name="recall_context",
             description=(
-                "Check what's already been researched before doing it again. Fetch by exact key "
-                "for direct lookup, or describe what you're looking for to find semantically related "
-                "findings. Use at the start of a task to avoid duplicating prior investigation, "
-                "or to hand off a finding between sub-agents."
+                "CALL THIS FIRST before researching anything. Check what's already been stored so you "
+                "don't repeat work that was already done. Fetch by exact key for direct lookup, or pass "
+                "a natural language query to find semantically related findings. Also use when handing "
+                "off between sub-agents — the prior agent's findings are here."
             ),
         )
         def recall_context(
@@ -1413,9 +1477,10 @@ def create_mcp_server(
         @mcp.tool(
             name="list_context",
             description=(
-                "See everything that's been stored in memory so far. "
-                "Use at the start of a new session or sub-task to check if prior research exists "
-                "before starting from scratch. Filter by tag to scope to a specific feature or sprint."
+                "See all stored memory entries with their keys and summaries. "
+                "Use at the start of a session to discover what's already been researched — "
+                "then use recall_context(key='...') to load the full content of anything relevant. "
+                "Filter by tag to scope to a specific feature or sprint."
             ),
         )
         def list_context(tag: str = "") -> str:
@@ -1424,24 +1489,72 @@ def create_mcp_server(
             Args:
                 tag: Optional tag to restrict results.
             """
+            from datetime import datetime, timezone
+
             entries = qdrant.list_brain_entries(tag=tag)
 
             if not entries:
                 note = f" with tag '{tag}'" if tag else ""
                 return f"No brain entries{note}. Use store_context to save findings."
 
+            now = datetime.now(timezone.utc)
+            stale_threshold_days = 30
             lines = [f"{len(entries)} brain {'entry' if len(entries) == 1 else 'entries'}:\n"]
+
             for e in entries:
-                created = e.get("created_at", "")[:10]
+                updated = e.get("updated_at") or e.get("created_at", "")
+                updated_date = updated[:10]
                 tag_note = f" [{', '.join(e['tags'])}]" if e.get("tags") else ""
-                # First line of content as summary
+
+                # Age and staleness
+                flags = []
+                if updated:
+                    try:
+                        age_days = (now - datetime.fromisoformat(updated)).days
+                        if age_days > stale_threshold_days:
+                            flags.append(f"stale? {age_days}d old")
+                    except ValueError:
+                        pass
+
+                # Expiry
+                expires_at = e.get("expires_at")
+                if expires_at:
+                    try:
+                        exp = datetime.fromisoformat(expires_at)
+                        days_left = (exp - now).days
+                        flags.append(f"expires in {days_left}d" if days_left >= 0 else "EXPIRED")
+                    except ValueError:
+                        pass
+
+                flag_str = f"  ⚠ {', '.join(flags)}" if flags else ""
                 summary = e["content"].splitlines()[0][:80]
                 if len(e["content"]) > 80:
                     summary += "…"
-                lines.append(f"  {e['key']}{tag_note}  ({created})")
+                lines.append(f"  {e['key']}{tag_note}  (updated {updated_date}){flag_str}")
                 lines.append(f"    {summary}")
 
             return "\n".join(lines)
+
+        @mcp.tool(
+            name="forget_context",
+            description=(
+                "Delete a brain entry that is no longer accurate or relevant. "
+                "Use when you discover a stored finding is wrong, outdated, or superseded by new research. "
+                "Prefer updating via store_context (same key overwrites) unless the entry should be "
+                "removed entirely."
+            ),
+        )
+        def forget_context(key: str) -> str:
+            """Delete a brain entry by key.
+
+            Args:
+                key: Exact key of the entry to delete.
+            """
+            existing = qdrant.search_brain(key=key)
+            if not existing:
+                return f"No brain entry found for key '{key}'."
+            qdrant.delete_brain_entry(key)
+            return f"Deleted brain entry '{key}'."
 
         @mcp.tool(
             name="search_commits",

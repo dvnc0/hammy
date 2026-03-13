@@ -1,27 +1,44 @@
-# Hammy configuration
-project:
-  name: "hammy"
-  root: "."
+# hammy.yaml — place this in your project root
 
-ignore:
-  use_gitignore: true
-  use_hgignore: true
-  use_hammyignore: true
-  extra_patterns: []
+project:
+  name: "my-project"   # Used to isolate Qdrant collections per project — set this!
+  root: "."            # Project root, relative to this config file
 
 parsing:
-  languages:
+  languages:           # Languages to index (remove any you don't use)
     - php
     - javascript
+    - typescript
     - python
-  max_file_size_kb: 500
+    - go
+    - csharp
+  max_file_size_kb: 500  # Skip files larger than this
 
 qdrant:
   host: "localhost"
   port: 6333
-  collection_prefix: "hammy"
-  embedding_model: "all-MiniLM-L6-v2"
+  collection_prefix: ""          # Leave blank to auto-derive from project.name (recommended)
+                                 # Set explicitly to override, e.g. "prod" or "shared-index"
+  embedding_model: "all-MiniLM-L6-v2"  # SentenceTransformer model for semantic search
 
 vcs:
-  max_commits: 5000
-  churn_window_days: 90
+  max_commits: 5000       # How far back to scan commit history
+  churn_window_days: 90   # Lookback window for hotspot churn scoring
+
+enrichment:
+  enabled: false          # Set true to auto-generate LLM summaries during indexing
+  provider: "anthropic"   # LiteLLM provider string (anthropic, openai, etc.)
+  model: "claude-haiku-4-5-20251001"  # Model to use for summaries
+  batch_size: 10          # Symbols enriched per API call
+  skip_if_summary: true   # Don't re-enrich symbols that already have summaries
+  max_symbols: 0          # Cap on symbols to enrich per run (0 = no limit)
+
+ignore:
+  use_gitignore: true     # Respect .gitignore
+  use_hgignore: true      # Respect .hgignore
+  use_hammyignore: true   # Respect .hammyignore
+  extra_patterns: []      # Additional glob patterns to exclude
+  # extra_patterns:
+  #   - "vendor/**"
+  #   - "*.generated.php"
+  #   - "*.Designer.cs"

@@ -25,7 +25,7 @@ Most coding agents navigate by reading files and hoping for the best. Hammy give
 
 ## Features
 
-- **Multi-language AST parsing** — PHP, JavaScript, TypeScript, Python, Go (Tree-sitter based)
+- **Multi-language AST parsing** — PHP, JavaScript, TypeScript, Python, Go, C# (Tree-sitter based)
 - **Full call expression indexing** — stores `$this->resolve(PaymentService::class)` not just `resolve`, enabling argument-level filtering
 - **Cross-language bridge detection** — links `fetch('/api/users')` in JS to the backend handler
 - **Semantic + hybrid search** — dense vector search (Qdrant) + BM25, merged via Reciprocal Rank Fusion
@@ -273,12 +273,7 @@ structural_search(min_params=5, visibility="public")      # candidates for param
 
 ## Configuration
 
-Each project keeps its own `hammy.yaml`. Hammy looks for it in two places (in order):
-
-1. `hammy.yaml` — directly in the project root (recommended)
-2. `config/hammy.yaml` — inside a config subdirectory (legacy)
-
-If neither exists, all defaults apply.
+Each project keeps its own `hammy.yaml` in the project root. `hammy init` creates one for you. If neither exists, all defaults apply.
 
 ### Per-project isolation
 
@@ -307,6 +302,7 @@ parsing:
     - typescript
     - python
     - go
+    - csharp
   max_file_size_kb: 500  # Skip files larger than this
 
 qdrant:
@@ -332,9 +328,11 @@ ignore:
   use_gitignore: true     # Respect .gitignore
   use_hgignore: true      # Respect .hgignore
   use_hammyignore: true   # Respect .hammyignore
-  extra_patterns:         # Additional glob patterns to exclude
-    - "vendor/**"
-    - "*.generated.php"
+  extra_patterns: []      # Additional glob patterns to exclude
+  # extra_patterns:
+  #   - "vendor/**"
+  #   - "*.generated.php"
+  #   - "*.Designer.cs"
 ```
 
 ### .hammyignore
@@ -343,11 +341,14 @@ Create a `.hammyignore` in your project root using standard gitignore syntax. It
 
 ```gitignore
 # .hammyignore
+.hammy/
 vendor/
 node_modules/
 *.min.js
 storage/framework/
 bootstrap/cache/
+obj/
+bin/
 ```
 
 ---
@@ -367,7 +368,7 @@ hammy/
 │   ├── mcp/                # MCP server (mcp-python)
 │   ├── schema/             # Pydantic models (Node, Edge, ContextPack)
 │   └── tools/
-│       ├── languages/      # Tree-sitter extractors: php, js, ts, python, go
+│       ├── languages/      # Tree-sitter extractors: php, js, ts, python, go, csharp
 │       ├── ast_tools.py    # AST query tool
 │       ├── bridge.py       # Cross-language bridge resolver
 │       ├── diff_analysis.py# PR diff parser and blast radius
@@ -376,8 +377,8 @@ hammy/
 │       ├── parser.py       # ParserFactory dispatcher
 │       ├── qdrant_tools.py # Qdrant embed, upsert, search, delete
 │       └── vcs.py          # Git/Mercurial wrapper
-├── config/                 # Default configuration files
-├── tests/                  # 317 passing tests with fixtures
+├── config/                 # agents.yaml and tasks.yaml templates
+├── tests/                  # 342 passing tests with fixtures
 └── docker-compose.yml      # Qdrant service
 ```
 

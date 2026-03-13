@@ -1,13 +1,16 @@
 """Hybrid search: BM25 sparse + semantic dense via Reciprocal Rank Fusion.
 
-BM25 runs in-memory on the indexed node list (fast for typical codebases).
-When Qdrant is available, dense embeddings are fetched from Qdrant and
-the two result lists are merged with RRF for a diverse, high-precision result.
+BM25 runs in-memory on the indexed node list. When Qdrant is available,
+dense embeddings are fetched and merged with BM25 via RRF.
+
+For large codebases, build a BM25Index once at startup with build_bm25_index()
+and pass it to hybrid_search() to avoid re-tokenizing on every query.
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from hammy.schema.models import Node
@@ -34,6 +37,46 @@ def _node_text(node: Node) -> str:
     if node.meta.return_type:
         parts.append(node.meta.return_type)
     return " ".join(parts)
+
+
+@dataclass
+class BM25Index:
+    """Pre-built BM25 index for fast repeated queries on large codebases.
+
+    Build once at startup with build_bm25_index() and pass to hybrid_search().
+    Invalidate by calling build_bm25_index() again after reindex.
+    """
+
+    node_ids: list[str] = field(default_factory=list)
+    payloads: list[dict[str, Any]] = field(default_factory=list)
+    tokenized: list[list[str]] = field(default_factory=list)
+    languages: list[str] = field(default_factory=list)
+    node_types: list[str] = field(default_factory=list)
+
+
+def build_bm25_index(nodes: list[Node]) -> BM25Index:
+    """Build a BM25Index from the current node list.
+
+    Tokenizes every node's text representation once and stores the result.
+    Subsequent queries skip tokenization entirely, only constructing BM25Plus
+    from the (already-tokenized) filtered subset — fast even on 50k+ symbols.
+    """
+    idx = BM25Index()
+    for n in nodes:
+        idx.node_ids.append(n.id)
+        idx.payloads.append({
+            "node_id": n.id,
+            "type": n.type.value,
+            "name": n.name,
+            "file": n.loc.file,
+            "lines": list(n.loc.lines),
+            "language": n.language,
+            "summary": n.summary,
+        })
+        idx.tokenized.append(_tokenize(_node_text(n)))
+        idx.languages.append(n.language)
+        idx.node_types.append(n.type.value)
+    return idx
 
 
 def _rrf(
@@ -63,6 +106,7 @@ def hybrid_search(
     query: str,
     nodes: list[Node],
     *,
+    bm25_index: BM25Index | None = None,
     qdrant: QdrantManager | None = None,
     limit: int = 10,
     language: str | None = None,
@@ -70,13 +114,16 @@ def hybrid_search(
 ) -> list[dict[str, Any]]:
     """Hybrid BM25 + semantic search with Reciprocal Rank Fusion.
 
-    BM25 is always computed in-memory on ``nodes``. When ``qdrant`` is
-    provided, a dense semantic search is also performed and the two result
-    sets are merged via RRF. Without Qdrant only BM25 results are returned.
+    BM25 is always computed on ``nodes``. When ``bm25_index`` is provided,
+    pre-tokenized data is used so only BM25Plus construction runs per query
+    (tokenization is skipped). When Qdrant is provided, dense semantic results
+    are merged via RRF.
 
     Args:
         query: Natural language or keyword search query.
-        nodes: The full indexed node list to BM25-search over.
+        nodes: The full indexed node list (used when bm25_index is None).
+        bm25_index: Optional pre-built index from build_bm25_index().
+                    Pass this on large codebases to avoid per-query tokenization.
         qdrant: Optional QdrantManager for semantic search.
         limit: Number of results to return.
         language: Optional language filter.
@@ -89,45 +136,67 @@ def hybrid_search(
     from rank_bm25 import BM25Plus
 
     fetch_k = limit * 4
-
-    # Apply filters for BM25 candidates
-    candidates = [
-        n for n in nodes
-        if (not language or n.language == language)
-        and (not node_type or n.type.value == node_type)
-    ]
-
     bm25_list: list[tuple[str, dict[str, Any]]] = []
 
-    if candidates:
-        texts = [_node_text(n) for n in candidates]
-        tokenized = [_tokenize(t) for t in texts]
-        # BM25Plus avoids zero/negative IDF on small corpora (BM25Okapi can
-        # produce negative scores when df == N, e.g. single-document corpora)
-        bm25 = BM25Plus(tokenized)
-        scores = bm25.get_scores(_tokenize(query))
+    if bm25_index is not None:
+        # Fast path: use pre-tokenized index, just filter and construct BM25Plus
+        indices = [
+            i for i, (lang, ntype) in enumerate(zip(bm25_index.languages, bm25_index.node_types))
+            if (not language or lang == language)
+            and (not node_type or ntype == node_type)
+        ]
 
-        # Rank by BM25 score, keep top fetch_k with score > 0
-        ranked_indices = sorted(
-            (i for i, s in enumerate(scores) if s > 0),
-            key=lambda i: -scores[i],
-        )[:fetch_k]
+        if indices:
+            filtered_tokenized = [bm25_index.tokenized[i] for i in indices]
+            bm25 = BM25Plus(filtered_tokenized)
+            scores = bm25.get_scores(_tokenize(query))
 
-        for i in ranked_indices:
-            n = candidates[i]
-            bm25_list.append((
-                n.id,
-                {
-                    "node_id": n.id,
-                    "type": n.type.value,
-                    "name": n.name,
-                    "file": n.loc.file,
-                    "lines": list(n.loc.lines),
-                    "language": n.language,
-                    "summary": n.summary,
-                    "score": float(scores[i]),
-                },
-            ))
+            ranked = sorted(
+                (i for i, s in enumerate(scores) if s > 0),
+                key=lambda i: -scores[i],
+            )[:fetch_k]
+
+            for rank_i in ranked:
+                orig_i = indices[rank_i]
+                payload = dict(bm25_index.payloads[orig_i])
+                payload["score"] = float(scores[rank_i])
+                bm25_list.append((bm25_index.node_ids[orig_i], payload))
+
+    else:
+        # Slow path: build from scratch (no pre-built index)
+        candidates = [
+            n for n in nodes
+            if (not language or n.language == language)
+            and (not node_type or n.type.value == node_type)
+        ]
+
+        if candidates:
+            texts = [_node_text(n) for n in candidates]
+            tokenized = [_tokenize(t) for t in texts]
+            # BM25Plus avoids zero/negative IDF on small corpora
+            bm25 = BM25Plus(tokenized)
+            scores = bm25.get_scores(_tokenize(query))
+
+            ranked_indices = sorted(
+                (i for i, s in enumerate(scores) if s > 0),
+                key=lambda i: -scores[i],
+            )[:fetch_k]
+
+            for i in ranked_indices:
+                n = candidates[i]
+                bm25_list.append((
+                    n.id,
+                    {
+                        "node_id": n.id,
+                        "type": n.type.value,
+                        "name": n.name,
+                        "file": n.loc.file,
+                        "lines": list(n.loc.lines),
+                        "language": n.language,
+                        "summary": n.summary,
+                        "score": float(scores[i]),
+                    },
+                ))
 
     if qdrant is None:
         return [payload for _, payload in bm25_list[:limit]]

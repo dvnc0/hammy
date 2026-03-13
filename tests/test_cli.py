@@ -14,18 +14,19 @@ class TestInit:
     def test_init_creates_config(self, tmp_path: Path):
         result = runner.invoke(app, ["init", str(tmp_path)])
         assert result.exit_code == 0
-        assert (tmp_path / "config" / "hammy.yaml").exists()
+        assert (tmp_path / "hammy.yaml").exists()
+        assert (tmp_path / "config" / "agents.yaml").exists()
         assert (tmp_path / ".hammyignore").exists()
 
     def test_init_doesnt_overwrite(self, tmp_path: Path):
         # First init
         runner.invoke(app, ["init", str(tmp_path)])
         # Write custom content
-        (tmp_path / "config" / "hammy.yaml").write_text("custom: true")
+        (tmp_path / "hammy.yaml").write_text("custom: true")
         # Second init should not overwrite
         result = runner.invoke(app, ["init", str(tmp_path)])
         assert result.exit_code == 0
-        assert "custom: true" in (tmp_path / "config" / "hammy.yaml").read_text()
+        assert "custom: true" in (tmp_path / "hammy.yaml").read_text()
 
 
 class TestIndex:

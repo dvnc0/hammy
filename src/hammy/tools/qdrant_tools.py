@@ -25,6 +25,17 @@ from sentence_transformers import SentenceTransformer
 from hammy.config import QdrantConfig
 from hammy.schema.models import Node
 
+# Module-level cache: model_name -> SentenceTransformer instance.
+# Loading a SentenceTransformer is expensive (~2s). Caching here means
+# multiple QdrantManager instances (e.g. in tests) share one loaded model.
+_MODEL_CACHE: dict[str, SentenceTransformer] = {}
+
+
+def _get_model(model_name: str) -> SentenceTransformer:
+    if model_name not in _MODEL_CACHE:
+        _MODEL_CACHE[model_name] = SentenceTransformer(model_name)
+    return _MODEL_CACHE[model_name]
+
 
 class QdrantManager:
     """Manages Qdrant collections and operations for Hammy."""
@@ -49,7 +60,7 @@ class QdrantManager:
         else:
             self._prefix = config.collection_prefix
 
-        self._model = SentenceTransformer(config.embedding_model)
+        self._model = _get_model(config.embedding_model)
         self._embedding_dim = self._model.get_sentence_embedding_dimension()
 
     def _collection_name(self, base: str) -> str:
@@ -359,22 +370,44 @@ class QdrantManager:
         content: str,
         tags: list[str] | None = None,
         source_files: list[str] | None = None,
+        expires_at: str | None = None,
     ) -> None:
         """Store or overwrite a brain entry.
 
         The key acts as a stable identifier — upserting with the same key
         replaces the previous entry. Content is embedded for semantic recall.
+        created_at is preserved from the original entry on updates.
 
         Args:
             key: Unique identifier for this entry (e.g. 'payment-flow-research').
             content: The discovered information to store.
             tags: Optional labels for grouping/filtering (e.g. ['payment', 'sprint-42']).
             source_files: Optional file paths this entry relates to.
+            expires_at: Optional ISO timestamp after which this entry is considered stale.
         """
         tags = tags or []
         source_files = source_files or []
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Preserve created_at from the existing entry if this is an update
+        created_at = now
+        existing = self.search_brain(key=key)
+        if existing:
+            created_at = existing[0].get("created_at", now)
+
         text_to_embed = f"{key}: {content}"
         embedding = self.embed([text_to_embed])[0]
+
+        payload: dict[str, Any] = {
+            "key": key,
+            "content": content,
+            "tags": tags,
+            "source_files": source_files,
+            "created_at": created_at,
+            "updated_at": now,
+        }
+        if expires_at:
+            payload["expires_at"] = expires_at
 
         collection = self._collection_name(self.BRAIN_COLLECTION)
         self._client.upsert(
@@ -383,16 +416,21 @@ class QdrantManager:
                 PointStruct(
                     id=self._brain_point_id(key),
                     vector=embedding,
-                    payload={
-                        "key": key,
-                        "content": content,
-                        "tags": tags,
-                        "source_files": source_files,
-                        "created_at": datetime.now(timezone.utc).isoformat(),
-                    },
+                    payload=payload,
                 )
             ],
         )
+
+    @staticmethod
+    def _is_expired(entry: dict[str, Any]) -> bool:
+        """Return True if the entry has passed its expires_at timestamp."""
+        expires_at = entry.get("expires_at")
+        if not expires_at:
+            return False
+        try:
+            return datetime.fromisoformat(expires_at) < datetime.now(timezone.utc)
+        except ValueError:
+            return False
 
     def search_brain(
         self,
@@ -422,7 +460,7 @@ class QdrantManager:
                 limit=1,
                 with_payload=True,
             )
-            return [r.payload for r in results]
+            return [r.payload for r in results if not self._is_expired(r.payload)]
 
         # Semantic search with optional tag filter
         if not query:
@@ -441,7 +479,11 @@ class QdrantManager:
             query_filter=Filter(must=conditions) if conditions else None,
             limit=limit,
         )
-        return [{"score": r.score, **r.payload} for r in results.points]
+        return [
+            {"score": r.score, **r.payload}
+            for r in results.points
+            if not self._is_expired(r.payload)
+        ]
 
     def list_brain_entries(self, tag: str = "") -> list[dict[str, Any]]:
         """List all brain entries, optionally filtered by tag.
@@ -463,9 +505,9 @@ class QdrantManager:
             limit=200,
             with_payload=True,
         )
-        # Sort newest first
-        entries = [r.payload for r in results]
-        entries.sort(key=lambda e: e.get("created_at", ""), reverse=True)
+        # Filter expired, sort newest-updated first
+        entries = [r.payload for r in results if not self._is_expired(r.payload)]
+        entries.sort(key=lambda e: e.get("updated_at", e.get("created_at", "")), reverse=True)
         return entries
 
     def delete_brain_entry(self, key: str) -> None:

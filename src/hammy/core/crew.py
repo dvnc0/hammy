@@ -52,8 +52,11 @@ class HammyCrew:
             except ValueError:
                 vcs = None
 
+        from hammy.tools.hybrid_search import build_bm25_index
+        bm25_index = build_bm25_index(nodes)
+
         explorer_tools = make_explorer_tools(
-            self.project_root, parser_factory, nodes, edges, qdrant
+            self.project_root, parser_factory, nodes, edges, qdrant, bm25_index=bm25_index
         )
 
         historian_tools = []

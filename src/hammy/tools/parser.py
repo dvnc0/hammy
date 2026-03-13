@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 import tree_sitter
+import tree_sitter_c_sharp as ts_cs
 import tree_sitter_go as ts_go
 import tree_sitter_javascript as ts_js
 import tree_sitter_php as ts_php
@@ -23,6 +24,7 @@ LANGUAGE_REGISTRY: dict[str, tuple[Callable[[], object], list[str]]] = {
     "python": (ts_py.language, [".py", ".pyi"]),
     "typescript": (ts_ts.language_typescript, [".ts", ".tsx"]),
     "go": (ts_go.language, [".go"]),
+    "csharp": (ts_cs.language, [".cs"]),
 }
 
 # Build reverse mapping: extension -> language name

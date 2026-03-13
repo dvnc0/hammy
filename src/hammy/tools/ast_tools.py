@@ -17,6 +17,7 @@ import hammy.tools.languages.javascript  # noqa: F401
 import hammy.tools.languages.python  # noqa: F401
 import hammy.tools.languages.typescript  # noqa: F401
 import hammy.tools.languages.go  # noqa: F401
+import hammy.tools.languages.csharp  # noqa: F401
 
 
 def extract_symbols(

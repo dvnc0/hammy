@@ -12,17 +12,16 @@ from hammy.config import HammyConfig
 from hammy.mcp.server import create_mcp_server
 
 
-@pytest.fixture
-def project_dir(tmp_path: Path) -> Path:
-    """Create a project directory with PHP and JS fixtures."""
-    # Copy fixtures
+@pytest.fixture(scope="session")
+def project_dir(tmp_path_factory) -> Path:
+    """Create a project directory with PHP and JS fixtures (shared for the whole session)."""
+    tmp_path = tmp_path_factory.mktemp("hammy_project")
     fixtures = Path(__file__).parent / "fixtures"
     for src in (fixtures / "sample_php").iterdir():
         shutil.copy2(src, tmp_path / src.name)
     for src in (fixtures / "sample_js").iterdir():
         shutil.copy2(src, tmp_path / src.name)
 
-    # Create config
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     (config_dir / "hammy.yaml").write_text(
@@ -37,9 +36,9 @@ def project_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def mcp_server(project_dir: Path):
-    """Create an MCP server for the test project."""
+    """Create an MCP server for the test project (shared for the whole session)."""
     config = HammyConfig.load(project_dir)
     return create_mcp_server(project_root=project_dir, config=config)
 
@@ -323,8 +322,32 @@ class TestIndexStatus:
 
 
 class TestReindex:
+    """Reindex tests mutate files in project_dir, so they use isolated fixtures."""
+
+    @pytest.fixture
+    def reindex_project_dir(self, tmp_path: Path) -> Path:
+        fixtures = Path(__file__).parent / "fixtures"
+        for src in (fixtures / "sample_php").iterdir():
+            shutil.copy2(src, tmp_path / src.name)
+        for src in (fixtures / "sample_js").iterdir():
+            shutil.copy2(src, tmp_path / src.name)
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "hammy.yaml").write_text(
+            "project:\n  name: reindex-test\n  root: .\n"
+            "parsing:\n  languages:\n    - php\n    - javascript\n"
+        )
+        return tmp_path
+
+    @pytest.fixture
+    def reindex_server(self, reindex_project_dir: Path):
+        config = HammyConfig.load(reindex_project_dir)
+        return create_mcp_server(project_root=reindex_project_dir, config=config)
+
     @pytest.mark.asyncio
-    async def test_reindex_refreshes_symbols(self, mcp_server, project_dir):
+    async def test_reindex_refreshes_symbols(self, reindex_server, reindex_project_dir):
+        mcp_server = reindex_server
+        project_dir = reindex_project_dir
         # Get initial status
         result = await mcp_server.call_tool("index_status", {})
         initial_text = _extract_text(result)
@@ -348,7 +371,9 @@ class TestReindex:
         assert "NewClass" in text
 
     @pytest.mark.asyncio
-    async def test_reindex_removes_deleted_files(self, mcp_server, project_dir):
+    async def test_reindex_removes_deleted_files(self, reindex_server, reindex_project_dir):
+        mcp_server = reindex_server
+        project_dir = reindex_project_dir
         # Verify UserController exists initially
         result = await mcp_server.call_tool(
             "search_symbols", {"query": "UserController"}
@@ -368,8 +393,8 @@ class TestReindex:
         assert "No symbols matching" in _extract_text(result)
 
     @pytest.mark.asyncio
-    async def test_reindex_with_qdrant_flag(self, mcp_server):
-        result = await mcp_server.call_tool(
+    async def test_reindex_with_qdrant_flag(self, reindex_server):
+        result = await reindex_server.call_tool(
             "reindex", {"update_qdrant": True}
         )
         text = _extract_text(result)
@@ -378,8 +403,8 @@ class TestReindex:
         assert "Qdrant" in text or "Symbols extracted" in text
 
     @pytest.mark.asyncio
-    async def test_reindex_tool_registered(self, mcp_server):
-        tools = await mcp_server.list_tools()
+    async def test_reindex_tool_registered(self, reindex_server):
+        tools = await reindex_server.list_tools()
         tool_names = {t.name for t in tools}
         assert "reindex" in tool_names
 
@@ -617,32 +642,42 @@ class TestBrainTools:
 class TestMCPWithVCS:
     """Tests for VCS-dependent tools (require a git repo)."""
 
-    @pytest.fixture
-    def git_project(self, project_dir: Path) -> Path:
-        """Initialize a git repo in the project directory."""
+    @pytest.fixture(scope="class")
+    def git_project(self, tmp_path_factory) -> Path:
+        """Create an isolated git repo with fixture files (shared per test class)."""
         import subprocess
 
-        subprocess.run(
-            ["git", "init"], cwd=project_dir, capture_output=True, check=True
-        )
-        subprocess.run(
-            ["git", "config", "user.email", "test@test.com"],
-            cwd=project_dir, capture_output=True, check=True,
-        )
-        subprocess.run(
-            ["git", "config", "user.name", "Test"],
-            cwd=project_dir, capture_output=True, check=True,
-        )
-        subprocess.run(
-            ["git", "add", "."], cwd=project_dir, capture_output=True, check=True
-        )
-        subprocess.run(
-            ["git", "commit", "-m", "Initial commit"],
-            cwd=project_dir, capture_output=True, check=True,
-        )
-        return project_dir
+        tmp_path = tmp_path_factory.mktemp("hammy_git")
+        fixtures = Path(__file__).parent / "fixtures"
+        for src in (fixtures / "sample_php").iterdir():
+            shutil.copy2(src, tmp_path / src.name)
+        for src in (fixtures / "sample_js").iterdir():
+            shutil.copy2(src, tmp_path / src.name)
 
-    @pytest.fixture
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "hammy.yaml").write_text(
+            "project:\n"
+            "  name: test-git-project\n"
+            "  root: .\n"
+            "parsing:\n"
+            "  languages:\n"
+            "    - php\n"
+            "    - javascript\n"
+        )
+
+        for cmd in (
+            ["git", "init"],
+            ["git", "config", "user.email", "test@test.com"],
+            ["git", "config", "user.name", "Test"],
+            ["git", "add", "."],
+            ["git", "commit", "-m", "Initial commit"],
+        ):
+            subprocess.run(cmd, cwd=tmp_path, capture_output=True, check=True)
+
+        return tmp_path
+
+    @pytest.fixture(scope="class")
     def vcs_mcp_server(self, git_project: Path):
         config = HammyConfig.load(git_project)
         return create_mcp_server(project_root=git_project, config=config)

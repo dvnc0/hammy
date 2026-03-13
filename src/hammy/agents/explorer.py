@@ -22,6 +22,7 @@ def make_explorer_tools(
     all_nodes: list[Node],
     all_edges: list,
     qdrant=None,
+    bm25_index=None,
 ) -> list:
     """Create Explorer agent tools bound to the current project context."""
 
@@ -576,6 +577,7 @@ def make_explorer_tools(
         results = hybrid_search(
             query,
             all_nodes,
+            bm25_index=bm25_index,
             qdrant=qdrant,
             limit=limit,
             language=language or None,
