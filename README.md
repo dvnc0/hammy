@@ -47,14 +47,14 @@ Most coding agents navigate by reading files and hoping for the best. Hammy give
 Requires [uv](https://github.com/astral-sh/uv) and Docker (for Qdrant).
 
 ```bash
-git clone https://github.com/yourusername/hammy.git
+git clone https://github.com/dvnc0/hammy.git
 cd hammy
 uv sync --extra dev
 
 # Start Qdrant
 docker compose up -d
 
-# Install as a CLI tool
+# Install as a CLI tool (very recommended)
 uv tool install --editable .
 ```
 
@@ -62,10 +62,16 @@ uv tool install --editable .
 
 ## Quick Start
 
+After you install the CLI tool, you can run these commands:
+
 ```bash
 # Point Hammy at your project
 hammy init /path/to/your/project
+```
 
+This will create a `config/` folder and 3 config files: `hammy.yaml`, `agents.yaml`, `tasks.yaml` and a `.hammyignore` file. You must configure the `agents.yaml` file to use hammy and to index your codebase.
+
+```bash
 # Index the codebase
 cd /path/to/your/project
 hammy index
@@ -292,24 +298,24 @@ If you need manual control (e.g. sharing an index between environments), set `qd
 # hammy.yaml  (place in project root)
 
 project:
-  name: "my-project"   # Used to isolate Qdrant collections per project — set this!
-  root: "."            # Project root, relative to this config file
+  name: "my-project"      # Used to isolate Qdrant collections per project — set this!
+  root: "."               # Project root, relative to this config file
 
 parsing:
-  languages:           # Which languages to index (all enabled by default)
+  languages:              # Which languages to index (all enabled by default)
     - php
     - javascript
     - typescript
     - python
     - go
     - csharp
-  max_file_size_kb: 500  # Skip files larger than this
+  max_file_size_kb: 500   # Skip files larger than this
 
 qdrant:
   host: "localhost"
   port: 6333
-  collection_prefix: ""          # Leave blank to auto-derive from project.name (recommended)
-                                 # Set explicitly to override, e.g. "prod" or "shared-index"
+  collection_prefix: ""   # Set explicitly to override, e.g. "prod" or "shared-index" (required)
+                                 
   embedding_model: "all-MiniLM-L6-v2"  # SentenceTransformer model for semantic search
 
 vcs:
