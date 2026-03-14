@@ -18,6 +18,7 @@ from hammy.schema.models import (
     RelationType,
 )
 from hammy.tools.languages.helpers import (
+    extract_comments,
     extract_parameters,
     find_child,
     get_child_text,
@@ -60,6 +61,12 @@ def extract(tree: tree_sitter.Tree, file_path: str) -> tuple[list[Node], list[Ed
         elif child.type == "enum_declaration":
             _extract_enum(child, file_path, nodes)
 
+    comment_nodes = extract_comments(
+        tree, file_path, "typescript",
+        [n for n in nodes if n.type != NodeType.COMMENT],
+        frozenset({"comment"}),
+    )
+    nodes.extend(comment_nodes)
     return nodes, edges
 
 

@@ -101,6 +101,8 @@ def make_explorer_tools(
         scored: list[tuple[int, Node]] = []
 
         for node in all_nodes:
+            if node.type == NodeType.COMMENT:
+                continue
             if language and node.language != language:
                 continue
             if node_type and node.type.value != node_type:
@@ -149,7 +151,8 @@ def make_explorer_tools(
         name_lower = name.lower()
         matches = [
             n for n in all_nodes
-            if n.name.lower() == name_lower
+            if n.type != NodeType.COMMENT
+            and n.name.lower() == name_lower
             and (not node_type or n.type.value == node_type)
         ]
 
@@ -157,7 +160,8 @@ def make_explorer_tools(
             pattern = re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE)
             matches = [
                 n for n in all_nodes
-                if pattern.search(n.name)
+                if n.type != NodeType.COMMENT
+                and pattern.search(n.name)
                 and (not node_type or n.type.value == node_type)
             ]
             if not matches:
@@ -204,7 +208,8 @@ def make_explorer_tools(
         node_index = {n.id: n for n in all_nodes}
         name_index: dict[str, list[Node]] = {}
         for n in all_nodes:
-            name_index.setdefault(n.name.lower(), []).append(n)
+            if n.type != NodeType.COMMENT:
+                name_index.setdefault(n.name.lower(), []).append(n)
 
         matches = name_index.get(name_lower, [])
         if not matches:
@@ -270,7 +275,7 @@ def make_explorer_tools(
             type_priority = {NodeType.CLASS: 0, NodeType.METHOD: 1, NodeType.FUNCTION: 2}
             siblings = [
                 n for n in all_nodes
-                if n.loc.file == sym.loc.file and n.id != sym.id
+                if n.loc.file == sym.loc.file and n.id != sym.id and n.type != NodeType.COMMENT
             ]
             siblings.sort(key=lambda n: (type_priority.get(n.type, 3), n.loc.lines[0]))
             siblings = siblings[:10]
@@ -279,6 +284,14 @@ def make_explorer_tools(
                 for s in siblings:
                     vis = f" [{s.meta.visibility}]" if s.meta.visibility else ""
                     lines.append(f"  {s.type.value}: {s.name}{vis} (line {s.loc.lines[0]})")
+
+            bare_name = re.split(r"::|\\|\.", sym.name)[-1]
+            attached_comments = [
+                n for n in all_nodes
+                if n.type == NodeType.COMMENT and n.meta.parent_symbol == sym.name
+            ]
+            if attached_comments:
+                lines.append(f"\nComments: {len(attached_comments)} attached — call search_comments(symbol='{bare_name}') for full context")
 
             sections.append("\n".join(lines))
 
@@ -305,6 +318,8 @@ def make_explorer_tools(
         dir_norm = directory.rstrip("/") + "/"
         by_file: dict[str, list[Node]] = {}
         for n in all_nodes:
+            if n.type == NodeType.COMMENT:
+                continue
             file = n.loc.file
             if not (file.startswith(dir_norm) or file.startswith(directory)):
                 continue
@@ -387,10 +402,10 @@ def make_explorer_tools(
         results: list[str] = []
         for name in name_list:
             name_lower = name.lower()
-            matches = [n for n in all_nodes if n.name.lower() == name_lower]
+            matches = [n for n in all_nodes if n.type != NodeType.COMMENT and n.name.lower() == name_lower]
             if not matches:
                 pattern = re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE)
-                matches = [n for n in all_nodes if pattern.search(n.name)]
+                matches = [n for n in all_nodes if n.type != NodeType.COMMENT and pattern.search(n.name)]
             if not matches:
                 results.append(f"Symbol '{name}' not found.")
                 continue
@@ -451,6 +466,8 @@ def make_explorer_tools(
         results: list[Node] = []
 
         for node in all_nodes:
+            if node.type == NodeType.COMMENT:
+                continue
             if node_type and node.type.value != node_type:
                 continue
             if language and node.language != language:
@@ -633,7 +650,12 @@ def make_explorer_tools(
         def _find_callers(names: set[str], visited: set[str]) -> list[tuple[Node, str]]:
             """Return (caller_node, callee_name) pairs for a set of callee names."""
             found = []
-            pats = {n: re.compile(r"\b" + re.escape(n) + r"\b", re.IGNORECASE) for n in names}
+            # Call contexts contain only the bare method name, not the fully-qualified name,
+            # so strip namespace/class prefix before matching.
+            pats = {
+                n: re.compile(r"\b" + re.escape(re.split(r"::|\\|\.", n)[-1]) + r"\b", re.IGNORECASE)
+                for n in names
+            }
             for edge in call_edges:
                 ctx = edge.metadata.context or ""
                 for callee_name, p in pats.items():
@@ -681,6 +703,10 @@ def make_explorer_tools(
                         f"  {'  ' * (hop - 1)}{caller.type.value}: {caller.name} "
                         f"({caller.loc.file}:{caller.loc.lines[0]}) calls {callee}"
                     )
+                    if hop == 1:
+                        coms = [n for n in all_nodes if n.type == NodeType.COMMENT and n.meta.parent_symbol == caller.name]
+                        for c in coms:
+                            lines.append(f"    ⚑ {c.loc.lines[0]}: {c.name}")
                     next_names.add(caller.name)
                     total_found += 1
                 current_names = next_names
@@ -773,6 +799,9 @@ def make_explorer_tools(
             )
             if r["summary"]:
                 lines.append(f"     {r['summary']}")
+            coms = [n for n in all_nodes if n.type == NodeType.COMMENT and n.meta.parent_symbol == r["name"]]
+            for c in coms:
+                lines.append(f"     ⚑ {c.loc.lines[0]}: {c.name}")
 
         return "\n".join(lines)
 
@@ -829,6 +858,14 @@ def make_explorer_tools(
                     )
                 if caller_count > 4:
                     lines.append(f"         … and {caller_count - 4} more")
+                sym_comments = [
+                    n for n in all_nodes
+                    if n.type == NodeType.COMMENT and n.meta.parent_symbol == r["symbol"]
+                ]
+                if sym_comments:
+                    lines.append(f"  Comments on {r['symbol']}:")
+                    for c in sym_comments:
+                        lines.append(f"    {c.loc.file}:{c.loc.lines[0]}: {c.name}")
 
         if unindexed:
             lines.append(f"\nNew/unindexed symbols: {', '.join(r['symbol'] for r in unindexed)}")
@@ -886,7 +923,46 @@ def make_explorer_tools(
 
         return "\n".join(lines)
 
-    core_tools = [ast_query, search_symbols, search_code_hybrid, lookup_symbol, explain_symbol, module_summary, lookup_symbols_batch, structural_search, find_usages, impact_analysis, hotspot_score, pr_diff, find_bridges, list_files]
+    @tool("Search Comments")
+    def search_comments(
+        pattern: str = "",
+        symbol: str = "",
+        file_filter: str = "",
+        limit: int = 50,
+    ) -> str:
+        """Search indexed inline comments and annotations from the codebase.
+        Use to find 'don't touch this', TODO, warning comments, or developer prose attached to symbols.
+        Filter by keyword (pattern), parent symbol name, or file path.
+
+        Args:
+            pattern: Substring/keyword to match within comment text.
+            symbol: Filter by parent symbol name (word-boundary match).
+            file_filter: Filter by file path substring.
+            limit: Maximum results to return (default 50).
+        """
+        comment_nodes = [n for n in all_nodes if n.type == NodeType.COMMENT]
+
+        if pattern:
+            comment_nodes = [n for n in comment_nodes if pattern.lower() in n.name.lower()]
+        if symbol:
+            sym_re = re.compile(r"\b" + re.escape(symbol) + r"\b", re.IGNORECASE)
+            comment_nodes = [n for n in comment_nodes if sym_re.search(n.meta.parent_symbol)]
+        if file_filter:
+            comment_nodes = [n for n in comment_nodes if file_filter.lower() in n.loc.file.lower()]
+
+        comment_nodes = comment_nodes[:limit]
+
+        if not comment_nodes:
+            return "No comments found matching the given filters."
+
+        lines = [f"{len(comment_nodes)} comment(s) found:\n"]
+        for c in comment_nodes:
+            parent_label = f"[parent: {c.meta.parent_symbol}]  " if c.meta.parent_symbol else "[file-level]  "
+            lines.append(f"{parent_label}{c.loc.file}:{c.loc.lines[0]}")
+            lines.append(f"  {c.name}")
+        return "\n".join(lines)
+
+    core_tools = [ast_query, search_symbols, search_code_hybrid, lookup_symbol, explain_symbol, module_summary, lookup_symbols_batch, structural_search, find_usages, impact_analysis, hotspot_score, pr_diff, find_bridges, list_files, search_comments]
 
     if qdrant is None:
         return core_tools

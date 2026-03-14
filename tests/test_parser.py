@@ -616,3 +616,80 @@ class TestCallTracking:
         _, edges = extract_symbols(tree, lang, "api.js")
         calls = [e for e in edges if e.relation == RelationType.CALLS]
         assert all(c.metadata.confidence == 0.8 for c in calls)
+
+class TestCommentExtraction:
+    """Tests for comment node extraction across languages."""
+
+    def _parse_source(self, source: str, lang: str, tmp_path) -> tuple:
+        """Write source to a temp file and parse it."""
+        factory = ParserFactory([lang])
+        ext = {"php": ".php", "python": ".py", "javascript": ".js", "go": ".go", "csharp": ".cs"}.get(lang, ".txt")
+        f = tmp_path / f"test{ext}"
+        f.write_text(source)
+        result = factory.parse_file(f)
+        assert result is not None
+        tree, detected_lang = result
+        nodes, edges = extract_symbols(tree, detected_lang, str(f))
+        return nodes, edges
+
+    def test_php_comment_extracted(self, tmp_path):
+        source = "<?php\n// This is a test comment\nfunction myFunc() {}\n"
+        nodes, _ = self._parse_source(source, "php", tmp_path)
+        comments = [n for n in nodes if n.type == NodeType.COMMENT]
+        assert len(comments) >= 1
+        assert any("This is a test comment" in c.name for c in comments)
+
+    def test_python_comment_extracted(self, tmp_path):
+        source = "# This is a python comment\ndef my_func():\n    pass\n"
+        nodes, _ = self._parse_source(source, "python", tmp_path)
+        comments = [n for n in nodes if n.type == NodeType.COMMENT]
+        assert len(comments) >= 1
+        assert any("python comment" in c.name for c in comments)
+
+    def test_javascript_comment_extracted(self, tmp_path):
+        source = "// This is a js comment\nfunction foo() {}\n"
+        nodes, _ = self._parse_source(source, "javascript", tmp_path)
+        comments = [n for n in nodes if n.type == NodeType.COMMENT]
+        assert len(comments) >= 1
+        assert any("js comment" in c.name for c in comments)
+
+    def test_go_comment_extracted(self, tmp_path):
+        source = "package main\n// This is a go comment\nfunc Foo() {}\n"
+        nodes, _ = self._parse_source(source, "go", tmp_path)
+        comments = [n for n in nodes if n.type == NodeType.COMMENT]
+        assert len(comments) >= 1
+        assert any("go comment" in c.name for c in comments)
+
+    def test_comment_has_correct_node_type(self, tmp_path):
+        source = "<?php\n// test comment\nfunction f() {}\n"
+        nodes, _ = self._parse_source(source, "php", tmp_path)
+        comments = [n for n in nodes if n.type == NodeType.COMMENT]
+        assert all(c.type == NodeType.COMMENT for c in comments)
+
+    def test_comment_linked_to_parent_symbol(self, tmp_path):
+        source = "<?php\nfunction myFunc() {\n    // inside comment\n}\n"
+        nodes, _ = self._parse_source(source, "php", tmp_path)
+        comments = [n for n in nodes if n.type == NodeType.COMMENT]
+        assert len(comments) >= 1
+        # The comment inside myFunc should be linked to it
+        inside = [c for c in comments if c.meta.parent_symbol == "myFunc"]
+        assert len(inside) >= 1
+
+    def test_comment_stripped_of_markers(self, tmp_path):
+        source = "<?php\n// This should be stripped\nfunction f() {}\n"
+        nodes, _ = self._parse_source(source, "php", tmp_path)
+        comments = [n for n in nodes if n.type == NodeType.COMMENT]
+        assert all(not c.name.startswith("//") for c in comments)
+
+    def test_trivial_comments_excluded(self, tmp_path):
+        source = "<?php\n//\n// x\nfunction f() {}\n"
+        nodes, _ = self._parse_source(source, "php", tmp_path)
+        comments = [n for n in nodes if n.type == NodeType.COMMENT]
+        # Single-char or empty comments should be filtered
+        assert all(len(c.name) >= 3 for c in comments)
+
+    def test_comments_excluded_from_symbol_count(self, tmp_path):
+        source = "<?php\n// just a comment\nfunction f() {}\n"
+        nodes, _ = self._parse_source(source, "php", tmp_path)
+        symbols = [n for n in nodes if n.type != NodeType.COMMENT]
+        assert all(n.type != NodeType.COMMENT for n in symbols)

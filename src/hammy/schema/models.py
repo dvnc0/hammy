@@ -23,6 +23,7 @@ class NodeType(str, Enum):
     ENDPOINT = "endpoint"
     TABLE = "table"
     INTERFACE = "interface"
+    COMMENT = "comment"
 
 
 class RelationType(str, Enum):
@@ -51,6 +52,7 @@ class NodeMeta(BaseModel):
     complexity_score: int | None = None
     parameters: list[str] = Field(default_factory=list)
     return_type: str | None = None
+    parent_symbol: str = ""  # Name of nearest enclosing symbol (or "" for file-level)
 
 
 class HistoryEntry(BaseModel):

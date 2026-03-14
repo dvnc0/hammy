@@ -69,6 +69,7 @@ class TestMCPServerCreation:
         assert "explain_symbol" in tool_names
         assert "module_summary" in tool_names
         assert "lookup_symbols_batch" in tool_names
+        assert "search_comments" in tool_names
 
     @pytest.mark.asyncio
     async def test_tool_count_without_vcs_or_qdrant(self, mcp_server):
@@ -885,3 +886,37 @@ def _extract_text(result) -> str:
                 parts.append(str(item))
         return "\n".join(parts)
     return str(result)
+
+
+class TestSearchComments:
+    """Tests for the search_comments MCP tool."""
+
+    def test_search_comments_tool_exists(self, mcp_server):
+        import asyncio
+        tools = asyncio.get_event_loop().run_until_complete(mcp_server.list_tools())
+        tool_names = {t.name for t in tools}
+        assert "search_comments" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_search_comments_no_filter_returns_result(self, mcp_server):
+        result = await mcp_server.call_tool("search_comments", {})
+        text = _extract_text(result)
+        # Should return either "No comments found" or actual comments
+        assert isinstance(text, str)
+        assert len(text) > 0
+
+    @pytest.mark.asyncio
+    async def test_search_comments_pattern_filter(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "search_comments", {"pattern": "xyznonexistent12345"}
+        )
+        text = _extract_text(result)
+        assert "No comments found" in text
+
+    @pytest.mark.asyncio
+    async def test_search_comments_file_filter(self, mcp_server):
+        result = await mcp_server.call_tool(
+            "search_comments", {"file_filter": "xyznonexistent12345.php"}
+        )
+        text = _extract_text(result)
+        assert "No comments found" in text

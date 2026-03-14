@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from hammy.schema.models import Node
+from hammy.schema.models import Node, NodeType
 
 if TYPE_CHECKING:
     from hammy.tools.qdrant_tools import QdrantManager
@@ -63,6 +63,8 @@ def build_bm25_index(nodes: list[Node]) -> BM25Index:
     """
     idx = BM25Index()
     for n in nodes:
+        if n.type == NodeType.COMMENT:
+            continue
         idx.node_ids.append(n.id)
         idx.payloads.append({
             "node_id": n.id,
@@ -166,7 +168,8 @@ def hybrid_search(
         # Slow path: build from scratch (no pre-built index)
         candidates = [
             n for n in nodes
-            if (not language or n.language == language)
+            if n.type != NodeType.COMMENT
+            and (not language or n.language == language)
             and (not node_type or n.type.value == node_type)
         ]
 

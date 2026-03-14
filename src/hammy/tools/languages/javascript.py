@@ -14,6 +14,7 @@ from hammy.schema.models import (
     RelationType,
 )
 from hammy.tools.languages.helpers import (
+    extract_comments,
     extract_parameters,
     find_child,
     get_child_text,
@@ -50,6 +51,12 @@ def extract(tree: tree_sitter.Tree, file_path: str) -> tuple[list[Node], list[Ed
         elif child.type == "expression_statement":
             _extract_expression_statement(child, file_path, nodes, edges)
 
+    comment_nodes = extract_comments(
+        tree, file_path, "javascript",
+        [n for n in nodes if n.type != NodeType.COMMENT],
+        frozenset({"comment"}),
+    )
+    nodes.extend(comment_nodes)
     return nodes, edges
 
 

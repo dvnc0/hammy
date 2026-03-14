@@ -190,6 +190,8 @@ def create_mcp_server(
         scored: list[tuple[int, Node]] = []
 
         for node in all_nodes:
+            if node.type == NodeType.COMMENT:
+                continue
             if language and node.language != language:
                 continue
             if node_type and node.type.value != node_type:
@@ -300,7 +302,8 @@ def create_mcp_server(
         name_lower = name.lower()
         matches = [
             n for n in all_nodes
-            if n.name.lower() == name_lower
+            if n.type != NodeType.COMMENT
+            and n.name.lower() == name_lower
             and (not node_type or n.type.value == node_type)
         ]
 
@@ -309,7 +312,8 @@ def create_mcp_server(
             pattern = re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE)
             matches = [
                 n for n in all_nodes
-                if pattern.search(n.name)
+                if n.type != NodeType.COMMENT
+                and pattern.search(n.name)
                 and (not node_type or n.type.value == node_type)
             ]
             if not matches:
@@ -359,12 +363,13 @@ def create_mcp_server(
         node_index = {n.id: n for n in all_nodes}
         name_index: dict[str, list[Node]] = {}
         for n in all_nodes:
-            name_index.setdefault(n.name.lower(), []).append(n)
+            if n.type != NodeType.COMMENT:
+                name_index.setdefault(n.name.lower(), []).append(n)
 
         matches = name_index.get(name_lower, [])
         if not matches:
             pattern = re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE)
-            matches = [n for n in all_nodes if pattern.search(n.name)]
+            matches = [n for n in all_nodes if n.type != NodeType.COMMENT and pattern.search(n.name)]
             if not matches:
                 return f"Symbol '{name}' not found."
 
@@ -438,6 +443,15 @@ def create_mcp_server(
                     vis = f" [{s.meta.visibility}]" if s.meta.visibility else ""
                     lines.append(f"  {s.type.value}: {s.name}{vis} (line {s.loc.lines[0]})")
 
+            # Comments hint
+            bare_name = re.split(r"::|\\|\.", sym.name)[-1]
+            attached_comments = [
+                n for n in all_nodes
+                if n.type == NodeType.COMMENT and n.meta.parent_symbol == sym.name
+            ]
+            if attached_comments:
+                lines.append(f"\nComments: {len(attached_comments)} attached — call search_comments(symbol='{bare_name}') for full context")
+
             # Recent commits for file (VCS optional)
             if vcs is not None:
                 try:
@@ -486,6 +500,8 @@ def create_mcp_server(
         dir_norm = directory.rstrip("/") + "/"
         by_file: dict[str, list[Node]] = {}
         for n in all_nodes:
+            if n.type == NodeType.COMMENT:
+                continue
             file = n.loc.file
             if not (file.startswith(dir_norm) or file.startswith(directory)):
                 continue
@@ -577,10 +593,10 @@ def create_mcp_server(
         results: list[str] = []
         for name in name_list:
             name_lower = name.lower()
-            matches = [n for n in all_nodes if n.name.lower() == name_lower]
+            matches = [n for n in all_nodes if n.type != NodeType.COMMENT and n.name.lower() == name_lower]
             if not matches:
                 pattern = re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE)
-                matches = [n for n in all_nodes if pattern.search(n.name)]
+                matches = [n for n in all_nodes if n.type != NodeType.COMMENT and pattern.search(n.name)]
             if not matches:
                 results.append(f"Symbol '{name}' not found.")
                 continue
@@ -667,7 +683,12 @@ def create_mcp_server(
 
         def _find_callers(names: set[str], visited: set[str]) -> list[tuple[Node, str]]:
             found = []
-            pats = {n: re.compile(r"\b" + re.escape(n) + r"\b", re.IGNORECASE) for n in names}
+            # Call contexts contain only the bare method name (e.g. "sendPersonalInvite"),
+            # not the fully-qualified name, so strip namespace/class prefix before matching.
+            pats = {
+                n: re.compile(r"\b" + re.escape(re.split(r"::|\\|\.", n)[-1]) + r"\b", re.IGNORECASE)
+                for n in names
+            }
             for edge in call_edges:
                 ctx = edge.metadata.context or ""
                 for callee_name, p in pats.items():
@@ -714,6 +735,10 @@ def create_mcp_server(
                         f"  {'  ' * (hop - 1)}{caller.type.value}: {caller.name} "
                         f"({caller.loc.file}:{caller.loc.lines[0]}) calls {callee}"
                     )
+                    if hop == 1:
+                        coms = [n for n in all_nodes if n.type == NodeType.COMMENT and n.meta.parent_symbol == caller.name]
+                        for c in coms:
+                            lines.append(f"    ⚑ {c.loc.lines[0]}: {c.name}")
                     next_names.add(caller.name)
                     total_found += 1
                 current_names = next_names
@@ -801,6 +826,8 @@ def create_mcp_server(
         results: list[Node] = []
 
         for node in all_nodes:
+            if node.type == NodeType.COMMENT:
+                continue
             if node_type and node.type.value != node_type:
                 continue
             if language and node.language != language:
@@ -944,6 +971,9 @@ def create_mcp_server(
             )
             if r["summary"]:
                 lines.append(f"     {r['summary']}")
+            coms = [n for n in all_nodes if n.type == NodeType.COMMENT and n.meta.parent_symbol == r["name"]]
+            for c in coms:
+                lines.append(f"     ⚑ {c.loc.lines[0]}: {c.name}")
 
         out = "\n\n".join(lines)
         if qdrant is not None:
@@ -952,6 +982,51 @@ def create_mcp_server(
                 "store_context(key='hotspot-risk-map', content='...')"
             )
         return out
+
+    @mcp.tool(
+        name="search_comments",
+        description=(
+            "Search inline comments, docstrings, and code annotations indexed from the codebase. "
+            "Use to surface 'don't touch this', 'TODO', 'this order matters' warnings, "
+            "or any developer prose attached to specific symbols. "
+            "Filter by pattern (keyword), symbol name, or file path."
+        ),
+    )
+    def search_comments(
+        pattern: str = "",
+        symbol: str = "",
+        file_filter: str = "",
+        limit: int = 50,
+    ) -> str:
+        """Search indexed code comments.
+
+        Args:
+            pattern: Substring/keyword to match within comment text.
+            symbol: Filter by parent symbol name (word-boundary match).
+            file_filter: Filter by file path substring.
+            limit: Maximum results to return (default 50).
+        """
+        comment_nodes = [n for n in all_nodes if n.type == NodeType.COMMENT]
+
+        if pattern:
+            comment_nodes = [n for n in comment_nodes if pattern.lower() in n.name.lower()]
+        if symbol:
+            sym_re = re.compile(r"\b" + re.escape(symbol) + r"\b", re.IGNORECASE)
+            comment_nodes = [n for n in comment_nodes if sym_re.search(n.meta.parent_symbol)]
+        if file_filter:
+            comment_nodes = [n for n in comment_nodes if file_filter.lower() in n.loc.file.lower()]
+
+        comment_nodes = comment_nodes[:limit]
+
+        if not comment_nodes:
+            return "No comments found matching the given filters."
+
+        lines = [f"{len(comment_nodes)} comment(s) found:\n"]
+        for c in comment_nodes:
+            parent_label = f"[parent: {c.meta.parent_symbol}]  " if c.meta.parent_symbol else "[file-level]  "
+            lines.append(f"{parent_label}{c.loc.file}:{c.loc.lines[0]}")
+            lines.append(f"  {c.name}")
+        return "\n".join(lines)
 
     @mcp.tool(
         name="index_status",
@@ -1265,6 +1340,14 @@ def create_mcp_server(
                     )
                 if caller_count > 5:
                     lines.append(f"         … and {caller_count - 5} more callers")
+                sym_comments = [
+                    n for n in all_nodes
+                    if n.type == NodeType.COMMENT and n.meta.parent_symbol == r["symbol"]
+                ]
+                if sym_comments:
+                    lines.append(f"  Comments on {r['symbol']}:")
+                    for c in sym_comments:
+                        lines.append(f"    {c.loc.file}:{c.loc.lines[0]}: {c.name}")
 
         if unindexed:
             lines.append(f"\nNew/unindexed symbols (not yet in graph):")

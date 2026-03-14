@@ -23,7 +23,7 @@ from qdrant_client.models import (
 from sentence_transformers import SentenceTransformer
 
 from hammy.config import QdrantConfig
-from hammy.schema.models import Node
+from hammy.schema.models import Node, NodeType
 
 # Module-level cache: model_name -> SentenceTransformer instance.
 # Loading a SentenceTransformer is expensive (~2s). Caching here means
@@ -108,6 +108,7 @@ class QdrantManager:
 
         Returns the number of points upserted.
         """
+        nodes = [n for n in nodes if n.type != NodeType.COMMENT]
         if not nodes:
             return 0
 

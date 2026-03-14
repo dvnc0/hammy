@@ -14,6 +14,7 @@ from hammy.schema.models import (
     RelationType,
 )
 from hammy.tools.languages.helpers import (
+    extract_comments,
     find_child,
     node_lines,
     node_text,
@@ -39,6 +40,12 @@ def extract(tree: tree_sitter.Tree, file_path: str) -> tuple[list[Node], list[Ed
         elif child.type == "interface_declaration":
             _extract_interface(child, file_path, nodes, edges, namespace="")
 
+    comment_nodes = extract_comments(
+        tree, file_path, "csharp",
+        [n for n in nodes if n.type != NodeType.COMMENT],
+        frozenset({"line_comment", "block_comment"}),
+    )
+    nodes.extend(comment_nodes)
     return nodes, edges
 
 

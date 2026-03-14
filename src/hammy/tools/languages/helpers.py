@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import tree_sitter
 
+from hammy.schema.models import Location, Node, NodeMeta, NodeType
+
 
 def find_child(node: tree_sitter.Node, child_type: str) -> tree_sitter.Node | None:
     """Find the first child of a given type."""
@@ -118,6 +120,70 @@ CALL_NOISE = frozenset({
     "ArgumentNullException", "ArgumentException", "InvalidOperationException",
     "NotImplementedException", "NotSupportedException",
 })
+
+
+def collect_comment_nodes(
+    root: tree_sitter.Node,
+    comment_types: frozenset[str],
+) -> list[tree_sitter.Node]:
+    """Walk the tree and collect all comment nodes of the given types."""
+    results: list[tree_sitter.Node] = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type in comment_types:
+            results.append(node)
+        stack.extend(reversed(node.children))
+    return results
+
+
+def find_enclosing_symbol(comment_line: int, symbol_nodes: list[Node]) -> Node | None:
+    """Find the most-specific symbol whose line range contains comment_line.
+
+    If none contains it, return the nearest preceding symbol within 5 lines.
+    """
+    containing = [
+        n for n in symbol_nodes
+        if n.loc.lines[0] <= comment_line <= n.loc.lines[1]
+    ]
+    if containing:
+        return min(containing, key=lambda n: n.loc.lines[1] - n.loc.lines[0])
+    preceding = [n for n in symbol_nodes if n.loc.lines[1] < comment_line]
+    if preceding:
+        nearest = max(preceding, key=lambda n: n.loc.lines[1])
+        if comment_line - nearest.loc.lines[1] <= 5:
+            return nearest
+    return None
+
+
+def extract_comments(
+    tree: tree_sitter.Tree,
+    file_path: str,
+    language: str,
+    symbol_nodes: list[Node],
+    comment_types: frozenset[str],
+) -> list[Node]:
+    """Extract all comment nodes from the tree, linked to their enclosing symbol."""
+    results: list[Node] = []
+    raw_nodes = collect_comment_nodes(tree.root_node, comment_types)
+    for cn in raw_nodes:
+        text = node_text(cn).strip()
+        for prefix in ("///", "//", "#", "/*", "*/", "*"):
+            text = text.lstrip(prefix).strip()
+        if not text or len(text) < 3:
+            continue
+        line = cn.start_point[0] + 1
+        parent = find_enclosing_symbol(line, symbol_nodes)
+        node = Node(
+            id=Node.make_id(file_path, f"comment:{line}"),
+            type=NodeType.COMMENT,
+            name=text[:500],
+            loc=Location(file=file_path, lines=(line, cn.end_point[0] + 1)),
+            language=language,
+            meta=NodeMeta(parent_symbol=parent.name if parent else ""),
+        )
+        results.append(node)
+    return results
 
 
 def resolve_callee_name(callee_text: str) -> str | None:

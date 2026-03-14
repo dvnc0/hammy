@@ -254,7 +254,7 @@ class TestExplorerTools:
 
         factory = ParserFactory()
         tools = make_explorer_tools(tmp_path, factory, [], [])
-        assert len(tools) == 14
+        assert len(tools) == 15
         tool_names = [t.name for t in tools]
         assert "AST Query" in tool_names
         assert "Search Code Symbols" in tool_names
@@ -270,6 +270,7 @@ class TestExplorerTools:
         assert "Explain Symbol" in tool_names
         assert "Module Summary" in tool_names
         assert "Lookup Symbols Batch" in tool_names
+        assert "Search Comments" in tool_names
         # Brain tools should NOT be present without qdrant
         assert "Store Context" not in tool_names
         assert "Recall Context" not in tool_names
@@ -282,7 +283,7 @@ class TestExplorerTools:
 
         mock_qdrant = MagicMock()
         tools = make_explorer_tools(tmp_path, ParserFactory(), [], [], qdrant=mock_qdrant)
-        assert len(tools) == 17
+        assert len(tools) == 18
         tool_names = [t.name for t in tools]
         assert "Store Context" in tool_names
         assert "Recall Context" in tool_names
@@ -506,6 +507,26 @@ class TestImpactAnalysis:
         result = impact.func(symbol_name="getRenew", depth=1, direction="callers")
         assert "processRenewal" in result
         assert "handleRequest" not in result
+
+    def test_fully_qualified_name_finds_same_callers_as_bare_name(self, tmp_path: Path):
+        from hammy.agents.explorer import make_explorer_tools
+        from hammy.tools.parser import ParserFactory
+
+        # Simulate PHP-style: fully-qualified node name, bare call in context
+        target = _make_node("Subscription::getRenew", NodeType.METHOD, "Subscription.php")
+        caller = _make_node("processRenewal", NodeType.METHOD, "RenewalService.php")
+        # Call edge context only has the bare name, not the class-qualified name
+        edge = _make_calls_edge(caller.id, "getRenew")
+        nodes = [target, caller]
+        tools = make_explorer_tools(tmp_path, ParserFactory(), nodes, [edge])
+        impact = next(t for t in tools if t.name == "Impact Analysis")
+
+        result_bare = impact.func(symbol_name="getRenew", depth=1, direction="callers")
+        result_fq = impact.func(symbol_name="Subscription::getRenew", depth=1, direction="callers")
+
+        # Both should find processRenewal
+        assert "processRenewal" in result_bare
+        assert "processRenewal" in result_fq
 
 
 def _make_node_meta(
