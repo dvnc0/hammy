@@ -33,7 +33,15 @@ _MODEL_CACHE: dict[str, SentenceTransformer] = {}
 
 def _get_model(model_name: str) -> SentenceTransformer:
     if model_name not in _MODEL_CACHE:
-        _MODEL_CACHE[model_name] = SentenceTransformer(model_name)
+        # Try loading from the local HF cache first to avoid an
+        # unauthenticated network call to Hugging Face Hub on every run.
+        try:
+            _MODEL_CACHE[model_name] = SentenceTransformer(
+                model_name, local_files_only=True
+            )
+        except OSError:
+            # First run — model not cached yet, download it.
+            _MODEL_CACHE[model_name] = SentenceTransformer(model_name)
     return _MODEL_CACHE[model_name]
 
 
