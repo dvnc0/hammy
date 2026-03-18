@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hammy — Call Graph Explorer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:      #0D1117;
+    --surface: #161B22;
+    --surface2:#1C2333;
+    --border:  #30363D;
+    --text:    #E6EDF3;
+    --muted:   #7D8590;
+    --accent:  #58A6FF;
+  }
+
+  html, body { height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14px; overflow: hidden; }
+
+  /* ── Header ── */
+  header {
+    display: flex; align-items: center; gap: 16px;
+    padding: 0 20px; height: 56px; flex-shrink: 0;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+  }
+  .logo { font-size: 18px; font-weight: 700; letter-spacing: -0.5px;
+    color: var(--accent); white-space: nowrap; }
+  .logo span { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 8px; }
+  #stats-bar { display: flex; gap: 20px; font-size: 13px; color: var(--muted); white-space: nowrap; }
+  #stats-bar b { color: var(--text); }
+
+  .search-wrap { position: relative; flex: 1; max-width: 380px; }
+  #search {
+    width: 100%; padding: 7px 12px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font-size: 14px; outline: none;
+  }
+  #search:focus { border-color: var(--accent); }
+  #search::placeholder { color: var(--muted); }
+  #dropdown {
+    display: none; position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+    max-height: 260px; overflow-y: auto; z-index: 100; box-shadow: 0 8px 24px #0009;
+  }
+  .dd-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; }
+  .dd-item:hover { background: var(--surface); }
+  .dd-item .name { font-weight: 500; }
+  .dd-item .file { color: var(--muted); font-size: 12px; flex: 1; text-align: right;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
+
+  .hops { display: flex; gap: 4px; align-items: center; }
+  .hops span { color: var(--muted); font-size: 12px; margin-right: 2px; }
+  .hop-btn { padding: 5px 10px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--muted); cursor: pointer; font-size: 13px; }
+  .hop-btn:hover { border-color: var(--accent); color: var(--text); }
+  .hop-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  #reset-btn { padding: 6px 14px; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--muted); cursor: pointer; white-space: nowrap; font-size: 13px; }
+  #reset-btn:hover { color: var(--text); border-color: var(--accent); }
+
+  /* ── Layout ── */
+  .app { display: flex; flex-direction: column; height: 100vh; }
+  main { display: flex; flex: 1; overflow: hidden; }
+
+  #graph-wrap { position: relative; flex: 1; cursor: grab; }
+  #graph-wrap:active { cursor: grabbing; }
+  #graph-wrap svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* ── Tooltip ── */
+  #tooltip {
+    display: none; position: fixed; pointer-events: none; z-index: 200;
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 14px; font-size: 12px; max-width: 280px;
+    box-shadow: 0 8px 32px #0008;
+  }
+  #tooltip .tt-name { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  #tooltip .tt-file { color: var(--muted); margin-bottom: 4px; }
+  #tooltip .tt-badge { display: inline-block; padding: 2px 7px; border-radius: 4px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase; }
+
+  /* ── Sidebar ── */
+  aside { width: 300px; flex-shrink: 0; background: var(--surface);
+    border-left: 1px solid var(--border); overflow-y: auto; display: flex; flex-direction: column; }
+  .panel-title { padding: 14px 16px 10px; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+    border-bottom: 1px solid var(--border); }
+
+  .hotspot-item { display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+    border-bottom: 1px solid var(--border); cursor: pointer; }
+  .hotspot-item:hover { background: var(--surface2); }
+  .hotspot-rank { font-size: 11px; color: var(--muted); width: 20px; text-align: right; flex-shrink: 0; }
+  .hotspot-info { flex: 1; min-width: 0; }
+  .hotspot-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hotspot-meta { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; margin-top: 1px; }
+  .hotspot-score { font-size: 12px; font-weight: 600; padding: 2px 7px; border-radius: 4px;
+    background: #7f1d1d; color: #fca5a5; flex-shrink: 0; }
+
+  #details { display: none; padding: 16px; }
+  .detail-name { font-size: 17px; font-weight: 700; word-break: break-all; margin-bottom: 10px; }
+  .badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .badge { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: .05em; }
+  .detail-row { display: flex; gap: 8px; margin-bottom: 6px; font-size: 13px; }
+  .detail-row .label { color: var(--muted); flex-shrink: 0; width: 80px; }
+  .detail-row .value { color: var(--text); word-break: break-all; }
+  .detail-section { margin-top: 14px; }
+  .detail-section-title { font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted); margin-bottom: 8px; }
+  .summary-text { font-size: 13px; line-height: 1.5; }
+  .comment-item { padding: 8px 10px; background: var(--surface2); border-radius: 6px;
+    margin-bottom: 6px; font-size: 12px; }
+  .comment-line { color: var(--muted); font-size: 11px; margin-bottom: 3px; }
+  .comment-text { color: #86EFAC; line-height: 1.4; }
+  .no-comments { color: var(--muted); font-size: 13px; font-style: italic; }
+
+  /* ── Footer ── */
+  footer { padding: 8px 20px; background: var(--surface); border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 20px; font-size: 12px; flex-shrink: 0; }
+  .legend { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  .leg { display: flex; align-items: center; gap: 5px; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+  .hs-legend { margin-left: auto; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+
+  /* ── Loading ── */
+  #loading { position: fixed; inset: 0; background: var(--bg); display: flex;
+    align-items: center; justify-content: center; z-index: 999; flex-direction: column; gap: 16px; }
+  #loading .spinner { width: 40px; height: 40px; border: 3px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+  #loading p { color: var(--muted); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #empty-state { display: none; position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%,-50%); text-align: center; color: var(--muted); pointer-events: none; }
+  #empty-state p { margin-top: 8px; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div id="loading"><div class="spinner"></div><p>Loading index…</p></div>
+<div id="tooltip"></div>
+
+<div class="app">
+  <header>
+    <div class="logo">⚡ Hammy <span id="project-name"></span></div>
+    <div id="stats-bar">
+      <span><b id="s-symbols">…</b> symbols</span>
+      <span><b id="s-edges">…</b> relationships</span>
+      <span><b id="s-files">…</b> files</span>
+    </div>
+    <div class="search-wrap">
+      <input id="search" type="text" placeholder="Search symbols…">
+      <div id="dropdown"></div>
+    </div>
+    <div class="hops">
+      <span>Hops</span>
+      <button class="hop-btn" data-hops="1">1</button>
+      <button class="hop-btn active" data-hops="2">2</button>
+      <button class="hop-btn" data-hops="3">3</button>
+    </div>
+    <button id="reset-btn">⌂ Overview</button>
+  </header>
+
+  <main>
+    <div id="graph-wrap">
+      <div id="empty-state">
+        <svg width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/>
+        </svg>
+        <p>Search for a symbol to explore its call graph</p>
+      </div>
+    </div>
+
+    <aside>
+      <div class="panel-title" id="panel-title">🔥 Hotspots</div>
+      <div id="hotspots-list"></div>
+      <div id="details"></div>
+    </aside>
+  </main>
+
+  <footer>
+    <div class="legend">
+      <span style="color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Type</span>
+      <span class="leg"><span class="dot" style="background:#3B82F6"></span>class</span>
+      <span class="leg"><span class="dot" style="background:#10B981"></span>method</span>
+      <span class="leg"><span class="dot" style="background:#F59E0B"></span>function</span>
+      <span class="leg"><span class="dot" style="background:#A855F7"></span>endpoint</span>
+      <span class="leg"><span class="dot" style="background:#06B6D4"></span>interface</span>
+      <span class="leg"><span class="dot" style="background:#EF4444"></span>table</span>
+    </div>
+    <div class="hs-legend">
+      <span class="dot" style="background:#EF4444;opacity:.8"></span>
+      <span>Red ring = hotspot</span>
+    </div>
+  </footer>
+</div>
+
+<script>
+// ── Colour maps ────────────────────────────────────────────────────────────
+const TYPE_COLORS = {
+  class: '#3B82F6', method: '#10B981', function: '#F59E0B',
+  endpoint: '#A855F7', interface: '#06B6D4', table: '#EF4444',
+  variable: '#EC4899', file: '#64748B',
+};
+const EDGE_COLORS = {
+  calls: '#60A5FA', defines: '#374151', imports: '#34D399',
+  extends: '#C084FC', implements: '#22D3EE', networks_to: '#FB923C',
+};
+const nodeColor = t => TYPE_COLORS[t] || '#64748B';
+const edgeColor = r => EDGE_COLORS[r] || '#374151';
+
+// ── State ─────────────────────────────────────────────────────────────────
+let svg, g, linkG, nodeG, labelG, simulation;
+let graphData = { nodes: [], links: [] };
+let currentHops = 2, currentSymbol = null, _expandName = null;
+let allHotspots = [], searchTimer = null;
+let selectedNode = null;
+
+function expandSelected() { if (_expandName) loadSymbol(_expandName); }
+
+// ── D3 init ───────────────────────────────────────────────────────────────
+function initGraph() {
+  const wrap = document.getElementById('graph-wrap');
+
+  svg = d3.select('#graph-wrap').append('svg');
+
+  // ── SVG defs ──
+  const defs = svg.append('defs');
+
+  // Glow filter for seed / selected nodes
+  const fGlow = defs.append('filter').attr('id', 'glow')
+    .attr('x', '-60%').attr('y', '-60%').attr('width', '220%').attr('height', '220%');
+  fGlow.append('feGaussianBlur').attr('in', 'SourceGraphic')
+    .attr('stdDeviation', '5').attr('result', 'blur');
+  const fGlowMerge = fGlow.append('feMerge');
+  fGlowMerge.append('feMergeNode').attr('in', 'blur');
+  fGlowMerge.append('feMergeNode').attr('in', 'SourceGraphic');
+
+  // Softer glow for hover
+  const fHover = defs.append('filter').attr('id', 'glow-hover')
+    .attr('x', '-40%').attr('y', '-40%').attr('width', '180%').attr('height', '180%');
+  fHover.append('feGaussianBlur').attr('in', 'SourceGraphic')
+    .attr('stdDeviation', '3').attr('result', 'blur');
+  const fHoverMerge = fHover.append('feMerge');
+  fHoverMerge.append('feMergeNode').attr('in', 'blur');
+  fHoverMerge.append('feMergeNode').attr('in', 'SourceGraphic');
+
+  // Arrow marker
+  defs.append('marker').attr('id', 'arrow')
+    .attr('viewBox', '0 -4 8 8').attr('refX', 1).attr('refY', 0)
+    .attr('markerWidth', 5).attr('markerHeight', 5).attr('orient', 'auto')
+    .append('path').attr('d', 'M0,-4L8,0L0,4Z').attr('fill', '#4B5563').attr('opacity', 0.7);
+
+  // ── Zoom ──
+  const zoom = d3.zoom().scaleExtent([0.04, 6])
+    .on('zoom', e => g.attr('transform', e.transform));
+  svg.call(zoom).on('dblclick.zoom', null);
+  svg.on('click', e => {
+    if (e.target === svg.node()) {
+      selectedNode = null;
+      restoreAll();
+      clearDetails();
+    }
+  });
+
+  g      = svg.append('g');
+  linkG  = g.append('g');
+  nodeG  = g.append('g');
+  labelG = g.append('g');
+
+  // ── Force simulation ──
+  simulation = d3.forceSimulation()
+    .force('link', d3.forceLink().id(d => d.id).distance(110).strength(0.45))
+    .force('charge', d3.forceManyBody().strength(d => -280 - (d.size || 10) * 9))
+    .force('center', d3.forceCenter(wrap.clientWidth / 2, wrap.clientHeight / 2))
+    .force('collision', d3.forceCollide().radius(d => (d.size || 10) / 2 + 14).strength(0.8))
+    .alphaDecay(0.018)
+    .velocityDecay(0.38);
+}
+
+// ── Render ─────────────────────────────────────────────────────────────────
+function renderGraph(data) {
+  if (!data.nodes.length) return;
+
+  const maxDeg = Math.max(1, ...data.nodes.map(n => n.degree));
+
+  // Snapshot existing positions so nodes don't jump on update
+  const prevPos = {};
+  simulation.nodes().forEach(n => { prevPos[n.id] = { x: n.x, y: n.y }; });
+
+  const wrap = document.getElementById('graph-wrap');
+  const cx = wrap.clientWidth / 2, cy = wrap.clientHeight / 2;
+
+  const nodeObjs = data.nodes.map(n => {
+    const size = 14 + Math.round((n.degree / maxDeg) * 22);
+    const rawLabel = n.name.includes('::') ? n.name.split('::').pop() : n.name;
+    const label = rawLabel.length > 24 ? rawLabel.slice(0, 21) + '…' : rawLabel;
+    const prev = prevPos[n.id];
+    return {
+      id: n.id, fullName: n.name, label,
+      type: n.type, file: n.file, lines: n.lines,
+      language: n.language, summary: n.summary,
+      degree: n.degree, hotspot: n.hotspot,
+      isSeed: n.is_seed, commentCount: n.comment_count, comments: n.comments,
+      color: nodeColor(n.type), size,
+      x: prev ? prev.x : cx + (Math.random() - 0.5) * 80,
+      y: prev ? prev.y : cy + (Math.random() - 0.5) * 80,
+    };
+  });
+
+  const nodeById = Object.fromEntries(nodeObjs.map(n => [n.id, n]));
+  const linkObjs = data.edges
+    .filter(e => e.source !== e.target && nodeById[e.source] && nodeById[e.target])
+    .map(e => ({ source: e.source, target: e.target, relation: e.relation }));
+
+  graphData = { nodes: nodeObjs, links: linkObjs };
+
+  // ── Links ──
+  const links = linkG.selectAll('line').data(linkObjs, d => `${d.source}__${d.target}`)
+    .join(
+      enter => enter.append('line')
+        .attr('stroke', d => edgeColor(d.relation))
+        .attr('stroke-width', 1.3)
+        .attr('stroke-opacity', 0)
+        .attr('marker-end', 'url(#arrow)')
+        .call(e => e.transition().duration(400).attr('stroke-opacity', 0.28)),
+      update => update,
+      exit => exit.transition().duration(200).attr('stroke-opacity', 0).remove()
+    );
+
+  // ── Nodes ──
+  const nodes = nodeG.selectAll('circle').data(nodeObjs, d => d.id)
+    .join(
+      enter => enter.append('circle')
+        .attr('r', 0)
+        .attr('fill', d => d.color)
+        .attr('fill-opacity', 0.82)
+        .attr('stroke', d => d.isSeed ? '#FBBF24' : d.hotspot > 0 ? '#EF4444' : d.color)
+        .attr('stroke-width', d => d.isSeed ? 2.5 : d.hotspot > 0 ? 2 : 1.2)
+        .attr('stroke-opacity', 0.9)
+        .attr('filter', d => d.isSeed ? 'url(#glow)' : null)
+        .attr('cursor', 'pointer')
+        .call(e => e.transition().duration(350).attr('r', d => d.size / 2))
+        .call(d3.drag()
+          .on('start', dragStart).on('drag', dragged).on('end', dragEnd))
+        .on('mouseover', onNodeOver)
+        .on('mousemove', onNodeMove)
+        .on('mouseout', onNodeOut)
+        .on('click', (evt, d) => {
+          evt.stopPropagation();
+          selectedNode = d;
+          applyHighlight(d);
+          showDetails(d);
+        }),
+      update => update
+        .attr('fill', d => d.color)
+        .attr('stroke', d => d.isSeed ? '#FBBF24' : d.hotspot > 0 ? '#EF4444' : d.color)
+        .call(u => u.transition().duration(300).attr('r', d => d.size / 2)),
+      exit => exit.transition().duration(200).attr('r', 0).remove()
+    );
+
+  // ── Labels ──
+  const labels = labelG.selectAll('text').data(nodeObjs, d => d.id)
+    .join(
+      enter => enter.append('text')
+        .attr('text-anchor', 'middle')
+        .attr('dominant-baseline', 'hanging')
+        .attr('fill', '#D1D5DB')
+        .attr('font-size', d => d.isSeed ? 11 : 9)
+        .attr('font-weight', d => d.isSeed ? 600 : 400)
+        .attr('paint-order', 'stroke')
+        .attr('stroke', '#0D1117')
+        .attr('stroke-width', 3)
+        .attr('stroke-linejoin', 'round')
+        .attr('pointer-events', 'none')
+        .attr('opacity', 0)
+        .text(d => d.label)
+        .call(e => e.transition().delay(300).duration(300)
+          .attr('opacity', d => d.isSeed || d.degree >= 4 ? 0.85 : 0)),
+      update => update.text(d => d.label)
+        .attr('font-size', d => d.isSeed ? 11 : 9)
+        .call(u => u.transition().duration(200)
+          .attr('opacity', d => d.isSeed || d.degree >= 4 ? 0.85 : 0)),
+      exit => exit.transition().duration(150).attr('opacity', 0).remove()
+    );
+
+  // ── Tick ──
+  simulation.on('tick', () => {
+    linkG.selectAll('line').each(function(d) {
+      const sx = d.source.x, sy = d.source.y, tx = d.target.x, ty = d.target.y;
+      const dx = tx - sx, dy = ty - sy, dist = Math.sqrt(dx*dx + dy*dy) || 1;
+      const ux = dx / dist, uy = dy / dist;
+      const sr = d.source.size / 2, tr = d.target.size / 2 + 5;
+      d3.select(this)
+        .attr('x1', sx + ux * sr).attr('y1', sy + uy * sr)
+        .attr('x2', tx - ux * tr).attr('y2', ty - uy * tr);
+    });
+    nodeG.selectAll('circle').attr('cx', d => d.x).attr('cy', d => d.y);
+    labelG.selectAll('text').attr('x', d => d.x).attr('y', d => d.y + d.size / 2 + 3);
+  });
+
+  simulation.nodes(nodeObjs)
+    .force('link').links(linkObjs);
+  simulation.force('charge').strength(d => -280 - d.size * 9);
+  simulation.force('collision').radius(d => d.size / 2 + 14);
+  simulation.alpha(0.75).restart();
+
+  document.getElementById('empty-state').style.display = 'none';
+}
+
+// ── Drag ──────────────────────────────────────────────────────────────────
+function dragStart(evt, d) {
+  if (!evt.active) simulation.alphaTarget(0.25).restart();
+  d.fx = d.x; d.fy = d.y;
+}
+function dragged(evt, d) { d.fx = evt.x; d.fy = evt.y; }
+function dragEnd(evt, d) {
+  if (!evt.active) simulation.alphaTarget(0);
+  d.fx = null; d.fy = null;
+}
+
+// ── Hover / selection ─────────────────────────────────────────────────────
+function getNeighborhood(d) {
+  const neighborIds = new Set([d.id]);
+  const connIdx = new Set();
+  graphData.links.forEach((l, i) => {
+    const s = l.source.id ?? l.source, t = l.target.id ?? l.target;
+    if (s === d.id || t === d.id) { neighborIds.add(s); neighborIds.add(t); connIdx.add(i); }
+  });
+  return { neighborIds, connIdx };
+}
+
+function applyHighlight(d) {
+  const { neighborIds, connIdx } = getNeighborhood(d);
+  nodeG.selectAll('circle')
+    .attr('fill-opacity', n => neighborIds.has(n.id) ? 1.0 : 0.08)
+    .attr('stroke-opacity', n => neighborIds.has(n.id) ? 1.0 : 0.06)
+    .attr('filter', n => (n.id === d.id || n.isSeed) ? 'url(#glow)' : null);
+  linkG.selectAll('line')
+    .attr('stroke-opacity', (l, i) => connIdx.has(i) ? 0.85 : 0.03)
+    .attr('stroke-width', (l, i) => connIdx.has(i) ? 2 : 1.3);
+  labelG.selectAll('text')
+    .attr('opacity', n => neighborIds.has(n.id) ? 1.0 : 0);
+}
+
+function restoreAll() {
+  nodeG.selectAll('circle')
+    .attr('fill-opacity', 0.82).attr('stroke-opacity', 0.9)
+    .attr('filter', n => n.isSeed ? 'url(#glow)' : null);
+  linkG.selectAll('line').attr('stroke-opacity', 0.28).attr('stroke-width', 1.3);
+  labelG.selectAll('text').attr('opacity', d => d.isSeed || d.degree >= 4 ? 0.85 : 0);
+}
+
+function onNodeOver(evt, d) {
+  applyHighlight(d);
+  showTooltip(evt, d);
+}
+
+function onNodeMove(evt) { moveTooltip(evt); }
+
+function onNodeOut() {
+  hideTooltip();
+  if (selectedNode) applyHighlight(selectedNode);
+  else restoreAll();
+}
+
+// ── Tooltip ───────────────────────────────────────────────────────────────
+const tt = document.getElementById('tooltip');
+function showTooltip(evt, d) {
+  const shortFile = d.file.length > 48 ? '…' + d.file.slice(-48) : d.file;
+  const color = nodeColor(d.type);
+  tt.innerHTML = `
+    <div class="tt-name">${escHtml(d.fullName)}</div>
+    <div class="tt-file">${escHtml(shortFile)}:${d.lines[0]}</div>
+    <span class="tt-badge" style="background:${color}22;color:${color}">${d.type}</span>
+    ${d.hotspot > 0 ? `<span class="tt-badge" style="background:#7f1d1d;color:#fca5a5;margin-left:4px">🔥 ${d.hotspot}</span>` : ''}
+    ${d.commentCount > 0 ? `<span class="tt-badge" style="background:#14532d;color:#86efac;margin-left:4px">💬 ${d.commentCount}</span>` : ''}
+  `;
+  tt.style.display = 'block';
+  moveTooltip(evt);
+}
+function moveTooltip(evt) {
+  const x = evt.clientX + 14, y = evt.clientY - 10;
+  const bw = document.body.clientWidth;
+  tt.style.left = (x + 290 > bw ? x - 310 : x) + 'px';
+  tt.style.top = y + 'px';
+}
+function hideTooltip() { tt.style.display = 'none'; }
+
+// ── Details panel ─────────────────────────────────────────────────────────
+function showDetails(d) {
+  _expandName = d.fullName;
+  document.getElementById('hotspots-list').style.display = 'none';
+  document.getElementById('panel-title').textContent = '📋 Details';
+  const el = document.getElementById('details');
+  el.style.display = 'block';
+
+  const color = nodeColor(d.type);
+  const shortFile = d.file.length > 44 ? '…' + d.file.slice(-44) : d.file;
+
+  const commentsHtml = d.commentCount > 0 && d.comments?.length
+    ? `<div class="detail-section">
+        <div class="detail-section-title">💬 Developer Comments (${d.commentCount})</div>
+        ${d.comments.map(c => `
+          <div class="comment-item">
+            <div class="comment-line">line ${c.line}</div>
+            <div class="comment-text">${escHtml(c.text)}</div>
+          </div>`).join('')}
+       </div>`
+    : `<div class="detail-section"><div class="no-comments">No developer comments</div></div>`;
+
+  const summaryHtml = d.summary
+    ? `<div class="detail-section">
+        <div class="detail-section-title">Summary</div>
+        <div class="summary-text">${escHtml(d.summary)}</div>
+       </div>` : '';
+
+  el.innerHTML = `
+    <div class="detail-name">${escHtml(d.fullName)}</div>
+    <div class="badges">
+      <span class="badge" style="background:${color}22;color:${color}">${d.type}</span>
+      <span class="badge" style="background:#1e293b;color:#94a3b8">${d.language}</span>
+      ${d.hotspot > 0 ? `<span class="badge" style="background:#7f1d1d;color:#fca5a5">🔥 Hotspot ${d.hotspot}</span>` : ''}
+    </div>
+    <div class="detail-row"><span class="label">File</span><span class="value" title="${escHtml(d.file)}">${escHtml(shortFile)}</span></div>
+    <div class="detail-row"><span class="label">Lines</span><span class="value">${d.lines[0]}–${d.lines[1]}</span></div>
+    <div class="detail-row"><span class="label">Connections</span><span class="value">${d.degree} edges</span></div>
+    ${summaryHtml}
+    ${commentsHtml}
+    <div class="detail-section" style="margin-top:16px">
+      <button onclick="expandSelected()"
+        style="width:100%;padding:8px;background:var(--accent);border:none;border-radius:6px;
+               color:#fff;cursor:pointer;font-size:13px;font-weight:600">
+        Expand this symbol
+      </button>
+    </div>
+  `;
+}
+
+function clearDetails() {
+  document.getElementById('hotspots-list').style.display = 'block';
+  document.getElementById('panel-title').textContent = '🔥 Hotspots';
+  document.getElementById('details').style.display = 'none';
+}
+
+// ── Load symbol ───────────────────────────────────────────────────────────
+async function loadSymbol(name) {
+  currentSymbol = name;
+  selectedNode = null;
+  document.getElementById('search').value = name;
+  document.getElementById('dropdown').style.display = 'none';
+  clearDetails();
+  try {
+    const res = await fetch(`/api/graph?${new URLSearchParams({name, hops: currentHops})}`);
+    if (!res.ok) { alert(`Symbol not found: ${name}`); return; }
+    renderGraph(await res.json());
+  } catch (e) { console.error(e); }
+}
+
+// ── Overview (hotspot #1) ─────────────────────────────────────────────────
+async function loadOverview() {
+  currentSymbol = null;
+  document.getElementById('search').value = '';
+  clearDetails();
+  if (!allHotspots.length) return;
+  const res = await fetch(`/api/graph?${new URLSearchParams({name: allHotspots[0].name, hops: 2})}`);
+  if (res.ok) renderGraph(await res.json());
+}
+
+// ── Hotspot list ──────────────────────────────────────────────────────────
+function renderHotspotList(hotspots) {
+  const el = document.getElementById('hotspots-list');
+  if (!hotspots.length) {
+    el.innerHTML = '<div style="padding:16px;color:var(--muted);font-size:13px">No hotspots found.</div>';
+    return;
+  }
+  el.innerHTML = hotspots.map((h, i) => {
+    const shortFile = h.file.length > 34 ? '…' + h.file.slice(-34) : h.file;
+    const badge = h.comment_count > 0
+      ? ` <span style="color:#86EFAC;font-size:11px">💬${h.comment_count}</span>` : '';
+    return `
+    <div class="hotspot-item" data-sym="${escHtml(h.name)}">
+      <span class="hotspot-rank">${i + 1}</span>
+      <span style="display:inline-block;width:8px;height:8px;border-radius:50%;
+        background:${nodeColor(h.type)};flex-shrink:0"></span>
+      <div class="hotspot-info">
+        <div class="hotspot-name">${escHtml(h.name)}${badge}</div>
+        <div class="hotspot-meta">${escHtml(shortFile)} · ${h.caller_count} callers</div>
+      </div>
+      <span class="hotspot-score">${h.score.toFixed(1)}</span>
+    </div>`;
+  }).join('');
+}
+
+document.getElementById('hotspots-list').addEventListener('click', e => {
+  const item = e.target.closest('[data-sym]');
+  if (item) loadSymbol(item.dataset.sym);
+});
+
+// ── Search ────────────────────────────────────────────────────────────────
+document.getElementById('search').addEventListener('input', e => {
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  if (q.length < 2) { document.getElementById('dropdown').style.display = 'none'; return; }
+  searchTimer = setTimeout(() => fetchSearch(q), 160);
+});
+document.getElementById('search').addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.getElementById('dropdown').style.display = 'none';
+  if (e.key === 'Enter') { const q = e.target.value.trim(); if (q) loadSymbol(q); }
+});
+document.addEventListener('click', e => {
+  if (!e.target.closest('.search-wrap')) document.getElementById('dropdown').style.display = 'none';
+});
+document.getElementById('dropdown').addEventListener('click', e => {
+  const item = e.target.closest('[data-sym]');
+  if (item) loadSymbol(item.dataset.sym);
+});
+
+async function fetchSearch(q) {
+  const items = await fetch(`/api/search?q=${encodeURIComponent(q)}&limit=15`).then(r => r.json());
+  const dd = document.getElementById('dropdown');
+  if (!items.length) { dd.style.display = 'none'; return; }
+  dd.innerHTML = items.map(r => {
+    const shortFile = r.file.length > 36 ? '…' + r.file.slice(-36) : r.file;
+    return `<div class="dd-item" data-sym="${escHtml(r.name)}">
+      <span style="display:inline-block;width:8px;height:8px;border-radius:50%;
+        background:${nodeColor(r.type)};flex-shrink:0"></span>
+      <span class="name">${escHtml(r.name)}</span>
+      <span class="file">${escHtml(shortFile)}</span>
+    </div>`;
+  }).join('');
+  dd.style.display = 'block';
+}
+
+// ── Hops / reset ──────────────────────────────────────────────────────────
+document.querySelectorAll('.hop-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.hop-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentHops = parseInt(btn.dataset.hops, 10);
+    if (currentSymbol) loadSymbol(currentSymbol);
+  });
+});
+document.getElementById('reset-btn').addEventListener('click', loadOverview);
+
+// ── Util ──────────────────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────
+(async () => {
+  initGraph();
+  try {
+    const [stats, hotspots] = await Promise.all([
+      fetch('/api/stats').then(r => r.json()),
+      fetch('/api/hotspots?top_n=20').then(r => r.json()),
+    ]);
+
+    document.getElementById('project-name').textContent = stats.project;
+    document.getElementById('s-symbols').textContent = stats.symbols.toLocaleString();
+    document.getElementById('s-edges').textContent = stats.edges.toLocaleString();
+    document.getElementById('s-files').textContent = stats.files.toLocaleString();
+
+    allHotspots = hotspots;
+    renderHotspotList(hotspots);
+    document.getElementById('loading').style.display = 'none';
+
+    if (hotspots.length) await loadSymbol(hotspots[0].name);
+    else document.getElementById('empty-state').style.display = 'block';
+  } catch (err) {
+    document.getElementById('loading').innerHTML =
+      `<div style="color:#EF4444;text-align:center"><b>Failed to load</b><br><br>${escHtml(String(err))}</div>`;
+  }
+})();
+</script>
+</body>
+</html>

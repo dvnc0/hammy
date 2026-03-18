@@ -496,5 +496,54 @@ def serve(
     mcp_server.run(transport=transport)
 
 
+@app.command()
+def viz(
+    path: Path = typer.Argument(
+        Path("."),
+        help="Project root directory.",
+    ),
+    port: int = typer.Option(
+        8765,
+        "--port", "-p",
+        help="Port to listen on (default: 8765).",
+    ),
+    no_browser: bool = typer.Option(
+        False,
+        "--no-browser",
+        help="Don't open the browser automatically.",
+    ),
+) -> None:
+    """Launch the interactive call graph visualizer in your browser."""
+    try:
+        import uvicorn
+    except ImportError:
+        console.print("[red]Error:[/red] 'uvicorn' is required for the visualizer.")
+        console.print("Install it with:  [bold]pip install uvicorn fastapi[/bold]")
+        raise typer.Exit(1)
+
+    from hammy.viz.server import create_viz_app
+
+    path = path.resolve()
+
+    try:
+        viz_app = create_viz_app(path)
+    except RuntimeError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+    url = f"http://localhost:{port}"
+    console.print(f"\n[bold blue]Hammy Visualizer[/bold blue]")
+    console.print(f"  URL: [bold]{url}[/bold]")
+    console.print(f"  Project: {path.name}")
+    console.print(f"\n  Press [bold]Ctrl+C[/bold] to stop.\n")
+
+    if not no_browser:
+        import threading
+        import webbrowser
+        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+
+    uvicorn.run(viz_app, host="0.0.0.0", port=port, log_level="warning")
+
+
 if __name__ == "__main__":
     app()
