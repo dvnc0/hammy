@@ -52,6 +52,24 @@ class EnrichmentConfig(BaseModel):
     max_symbols: int = 0  # 0 = no limit
 
 
+class RedisExportConfig(BaseModel):
+    """Settings for Redis export."""
+
+    host: str = "localhost"
+    port: int = 6379
+    db: int = 0
+    password: str | None = None
+    key_prefix: str = "hammy"
+    batch_size: int = 200
+    commit_depth: int = 10
+
+
+class ExportConfig(BaseModel):
+    """Settings for data export targets."""
+
+    redis: RedisExportConfig = Field(default_factory=RedisExportConfig)
+
+
 class ProjectConfig(BaseModel):
     """Top-level project settings."""
 
@@ -68,6 +86,7 @@ class HammyConfig(BaseSettings):
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
     vcs: VCSConfig = Field(default_factory=VCSConfig)
     enrichment: EnrichmentConfig = Field(default_factory=EnrichmentConfig)
+    export: ExportConfig = Field(default_factory=ExportConfig)
 
     @classmethod
     def from_yaml(cls, path: Path) -> "HammyConfig":

@@ -545,5 +545,122 @@ def viz(
     uvicorn.run(viz_app, host="0.0.0.0", port=port, log_level="warning")
 
 
+# ── Export sub-commands ──────────────────────────────────────────────
+
+export_app = typer.Typer(
+    help="Export indexed data to external systems.",
+    no_args_is_help=True,
+)
+app.add_typer(export_app, name="export")
+
+
+@export_app.command(name="redis")
+def export_redis(
+    path: Path = typer.Argument(
+        Path("."),
+        help="Project root directory (must contain .hammy/index.json).",
+    ),
+    host: str | None = typer.Option(
+        None, "--host", "-H",
+        help="Redis host (default: from config or localhost).",
+    ),
+    port: int | None = typer.Option(
+        None, "--port",
+        help="Redis port (default: from config or 6379).",
+    ),
+    db: int | None = typer.Option(
+        None, "--db",
+        help="Redis database number (default: from config or 0).",
+    ),
+    password: str | None = typer.Option(
+        None, "--password",
+        help="Redis password.",
+    ),
+    prefix: str | None = typer.Option(
+        None, "--prefix",
+        help="Redis key prefix (default: from config or 'hammy').",
+    ),
+    batch_size: int | None = typer.Option(
+        None, "--batch-size",
+        help="Keys per pipeline batch (default: from config or 200).",
+    ),
+    commit_depth: int | None = typer.Option(
+        None, "--commit-depth",
+        help="Max commits per function (default: from config or 10).",
+    ),
+    flush: bool = typer.Option(
+        False, "--flush",
+        help="Delete existing keys with this prefix before exporting.",
+    ),
+) -> None:
+    """Export functions/methods from the index cache to Redis as JSON blobs."""
+    from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
+
+    from hammy.config import HammyConfig
+    from hammy.exporters.redis_export import export_to_redis
+    from hammy.indexer.index_cache import load_index
+
+    path = path.resolve()
+    config = HammyConfig.load(path)
+    rc = config.export.redis
+
+    # CLI flags override config; config overrides built-in defaults
+    actual_host = host if host is not None else rc.host
+    actual_port = port if port is not None else rc.port
+    actual_db = db if db is not None else rc.db
+    actual_password = password if password is not None else rc.password
+    actual_prefix = prefix if prefix is not None else rc.key_prefix
+    actual_batch = batch_size if batch_size is not None else rc.batch_size
+    actual_depth = commit_depth if commit_depth is not None else rc.commit_depth
+
+    # Load index cache
+    cached = load_index(path)
+    if cached is None:
+        console.print(
+            "[red]Error:[/red] No index cache found at .hammy/index.json\n"
+            "Run [bold]hammy index[/bold] first."
+        )
+        raise typer.Exit(1)
+
+    nodes, _edges = cached
+    from hammy.schema.models import NodeType
+    func_count = sum(1 for n in nodes if n.type in (NodeType.FUNCTION, NodeType.METHOD))
+    console.print(f"[bold blue]Redis Export[/bold blue]  {actual_host}:{actual_port}/{actual_db}")
+    console.print(f"  Prefix: {actual_prefix}  |  Functions: {func_count}  |  Commit depth: {actual_depth}")
+    if flush:
+        console.print("  [yellow]Flushing existing keys first[/yellow]")
+    console.print()
+
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Exporting to Redis", total=func_count)
+
+        def _on_progress(completed: int, total: int) -> None:
+            progress.update(task, completed=completed)
+
+        exported, errors = export_to_redis(
+            nodes,
+            host=actual_host,
+            port=actual_port,
+            db=actual_db,
+            password=actual_password,
+            key_prefix=actual_prefix,
+            batch_size=actual_batch,
+            commit_depth=actual_depth,
+            flush=flush,
+            progress_callback=_on_progress,
+        )
+
+    console.print(f"\n[green]Exported {exported} functions to Redis.[/green]")
+    if errors:
+        console.print(f"[yellow]Errors ({len(errors)}):[/yellow]")
+        for err in errors[:10]:
+            console.print(f"  - {err}")
+
+
 if __name__ == "__main__":
     app()
