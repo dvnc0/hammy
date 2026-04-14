@@ -262,6 +262,21 @@ class TestExportToRedis:
         assert mock_pipe.execute.call_count == 3
 
     @patch("hammy.exporters.redis_export.redis_lib")
+    def test_pipeline_execute_failure_returns_error(self, mock_redis_mod):
+        """A Redis execute failure should append to errors, not raise."""
+        mock_client = MagicMock()
+        mock_pipe = MagicMock()
+        mock_pipe.execute.side_effect = ConnectionError("connection lost")
+        mock_client.pipeline.return_value = mock_pipe
+        mock_redis_mod.Redis.return_value = mock_client
+
+        func = _make_function()
+        count, errors = export_to_redis([func])
+
+        assert count == 0
+        assert any("Pipeline execute failed" in e for e in errors)
+
+    @patch("hammy.exporters.redis_export.redis_lib")
     def test_flush_before_export(self, mock_redis_mod):
         mock_client = MagicMock()
         mock_pipe = MagicMock()

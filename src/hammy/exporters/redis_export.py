@@ -182,7 +182,11 @@ def export_to_redis(
                 except Exception as e:
                     errors.append(f"{node.name}: {e}")
 
-            pipe.execute()
+            try:
+                pipe.execute()
+            except Exception as e:
+                errors.append(f"Pipeline execute failed (batch {i // batch_size + 1}): {e}")
+                continue
             exported += batch_count
 
             if progress_callback:

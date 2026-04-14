@@ -574,7 +574,7 @@ def export_redis(
     ),
     password: str | None = typer.Option(
         None, "--password",
-        help="Redis password.",
+        help="Redis password. Prefer setting this in .hammy.yaml (export.redis.password) to avoid exposing it in process listings.",
     ),
     prefix: str | None = typer.Option(
         None, "--prefix",
