@@ -659,7 +659,7 @@ def export_redis(
     if errors:
         console.print(f"[yellow]Errors ({len(errors)}):[/yellow]")
         for err in errors[:10]:
-            console.print(f"  - {err}")
+            console.print(f"  - {err}", markup=False)
 
 
 if __name__ == "__main__":

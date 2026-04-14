@@ -58,6 +58,12 @@ docker compose up -d
 uv tool install --editable .
 ```
 
+**Optional extras:**
+
+| Extra | What it adds | Install |
+|-------|-------------|---------|
+| `redis` | `hammy export redis` command | `uv tool install --editable '.[redis]'` |
+
 ---
 
 ## Quick Start
@@ -277,6 +283,38 @@ structural_search(min_params=5, visibility="public")      # candidates for param
 
 ---
 
+## Export
+
+Export the indexed function/method data to external systems for use outside of hammy.
+
+### Redis
+
+Requires the `redis` optional extra — see [Installation](#installation).
+
+```bash
+hammy export redis                          # defaults: localhost:6379, db 0, prefix "hammy"
+hammy export redis --host redis.internal --db 2 --prefix myapp
+hammy export redis --flush                  # delete existing keys before writing
+```
+
+Each function is stored as `{prefix}:func:{id}` → JSON blob containing name, file, line range, parameters, return type, summary, comments, and recent commit history.
+
+Configure defaults in `hammy.yaml` to avoid repeating flags:
+
+```yaml
+export:
+  redis:
+    host: "redis.internal"
+    port: 6379
+    db: 2
+    key_prefix: "myapp"
+    batch_size: 200
+    commit_depth: 10
+    # password: set here rather than via --password flag (avoids process listing exposure)
+```
+
+---
+
 ## Configuration
 
 Each project keeps its own `hammy.yaml` in the project root. `hammy init` creates one for you. If neither exists, all defaults apply.
@@ -369,6 +407,7 @@ hammy/
 │   ├── ignore.py           # Four-layer ignore system
 │   ├── watcher.py          # watchfiles-based incremental re-indexer
 │   ├── agents/             # CrewAI Explorer and Historian agents
+│   ├── exporters/          # Export targets (redis_export.py)
 │   ├── core/               # Crew orchestration and context pack generation
 │   ├── indexer/            # File walking, parsing pipeline, incremental indexing
 │   ├── mcp/                # MCP server (mcp-python)
