@@ -62,6 +62,7 @@ class RedisExportConfig(BaseModel):
     key_prefix: str = "hammy"
     batch_size: int = 200
     commit_depth: int = 10
+    query_enabled: bool = False
 
 
 class ExportConfig(BaseModel):

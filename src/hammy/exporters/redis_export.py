@@ -83,6 +83,7 @@ def build_function_payload(
         "churn_rate": 0,
         "blame_owners": [],
         "indexed_at": indexed_at,
+        "meta": [],
     }
 
     if node.history:

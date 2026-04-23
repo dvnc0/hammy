@@ -310,6 +310,7 @@ export:
     key_prefix: "myapp"
     batch_size: 200
     commit_depth: 10
+    query_enabled: false  # set true to include Redis meta in MCP tool output
     # password: set here rather than via --password flag (avoids process listing exposure)
 ```
 

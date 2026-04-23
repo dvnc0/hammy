@@ -12,6 +12,7 @@ from pathlib import Path
 from mcp.server import FastMCP
 
 from hammy.config import HammyConfig
+from hammy.exporters.redis_meta import RedisMetaClient
 from hammy.indexer.code_indexer import index_codebase
 from hammy.indexer.index_cache import load_index, save_index
 from hammy.schema.models import Edge, Node, NodeType, RelationType
@@ -77,6 +78,14 @@ def create_mcp_server(
         vcs = VCSWrapper(project_root)
     except ValueError:
         pass
+
+    redis_meta: RedisMetaClient | None = None
+    if config.export.redis.query_enabled:
+        try:
+            redis_meta = RedisMetaClient(config.export.redis)
+            redis_meta.connect()
+        except Exception:
+            redis_meta = None
 
     # Create MCP server
     mcp = FastMCP(
@@ -340,6 +349,8 @@ def create_mcp_server(
                 line += "\n  async: true"
             if n.summary:
                 line += f"\n  summary: {n.summary}"
+            if redis_meta:
+                line += redis_meta.format_meta(n.id)
             lines.append(line)
 
         return "\n\n".join(lines)
@@ -390,6 +401,10 @@ def create_mcp_server(
                 lines.append("async: true")
             if sym.summary:
                 lines.append(f"summary: {sym.summary}")
+            if redis_meta:
+                meta_line = redis_meta.format_meta(sym.id).strip()
+                if meta_line:
+                    lines.append(meta_line)
 
             # Direct callers (depth=1)
             # Use bare name (last segment after :: or \) since call expressions
@@ -615,6 +630,8 @@ def create_mcp_server(
                     line += "\n  async: true"
                 if n.summary:
                     line += f"\n  summary: {n.summary}"
+                if redis_meta:
+                    line += redis_meta.format_meta(n.id)
                 lines.append(line)
             results.append("\n\n".join(lines))
 
@@ -1413,56 +1430,58 @@ def create_mcp_server(
 
             return "\n".join(lines)
 
-        @mcp.tool(
-            name="search_code_hybrid",
-            description=(
-                "Best default search. Combines BM25 (catches exact identifiers like method names) "
-                "with semantic embeddings (catches conceptual matches), merged via RRF. "
-                "Use when the query mixes exact terms and concepts: 'sendPersonalInvite email logic'. "
-                "Pure semantic search misses exact names; pure keyword misses synonyms — this does both."
-            ),
+    @mcp.tool(
+        name="search_code_hybrid",
+        description=(
+            "Best default search. Combines BM25 (catches exact identifiers like method names) "
+            "with semantic embeddings (catches conceptual matches), merged via RRF. "
+            "Use when the query mixes exact terms and concepts: 'sendPersonalInvite email logic'. "
+            "Pure semantic search misses exact names; pure keyword misses synonyms — this does both."
+        ),
+    )
+    def search_code_hybrid(
+        query: str,
+        limit: int = 10,
+        language: str = "",
+        node_type: str = "",
+    ) -> str:
+        """Hybrid BM25 + semantic code search with RRF fusion.
+
+        Args:
+            query: Keywords or natural language description.
+            limit: Maximum results to return (capped at 20).
+            language: Optional language filter.
+            node_type: Optional type filter ('class', 'function', 'method').
+        """
+        from hammy.tools.hybrid_search import hybrid_search
+
+        limit = min(limit, 20)
+        results = hybrid_search(
+            query,
+            all_nodes,
+            bm25_index=bm25_cache[0],
+            qdrant=qdrant,
+            limit=limit,
+            language=language or None,
+            node_type=node_type or None,
         )
-        def search_code_hybrid(
-            query: str,
-            limit: int = 10,
-            language: str = "",
-            node_type: str = "",
-        ) -> str:
-            """Hybrid BM25 + semantic code search with RRF fusion.
 
-            Args:
-                query: Keywords or natural language description.
-                limit: Maximum results to return (capped at 20).
-                language: Optional language filter.
-                node_type: Optional type filter ('class', 'function', 'method').
-            """
-            from hammy.tools.hybrid_search import hybrid_search
+        if not results:
+            return f"No code matching '{query}' found."
 
-            limit = min(limit, 20)
-            results = hybrid_search(
-                query,
-                all_nodes,
-                bm25_index=bm25_cache[0],
-                qdrant=qdrant,
-                limit=limit,
-                language=language or None,
-                node_type=node_type or None,
+        lines = []
+        for r in results:
+            score = r.get("score", 0)
+            lines.append(
+                f"[{score:.3f}] {r.get('type', '?')}: {r.get('name', '?')} "
+                f"({r.get('file', '?')}:{r.get('lines', '?')})"
             )
+            if r.get("summary"):
+                lines.append(f"  {r['summary']}")
 
-            if not results:
-                return f"No code matching '{query}' found."
+        return "\n".join(lines)
 
-            lines = []
-            for r in results:
-                score = r.get("score", 0)
-                lines.append(
-                    f"[{score:.3f}] {r.get('type', '?')}: {r.get('name', '?')} "
-                    f"({r.get('file', '?')}:{r.get('lines', '?')})"
-                )
-                if r.get("summary"):
-                    lines.append(f"  {r['summary']}")
-
-            return "\n".join(lines)
+    if qdrant is not None:
 
         @mcp.tool(
             name="store_context",
