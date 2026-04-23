@@ -8,12 +8,46 @@ and re-upserted to Qdrant so embeddings reflect the richer descriptions.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Callable
 
+import logging
+
+import litellm
+from dotenv import load_dotenv
+
+# LiteLLM's logging machinery tries to import proxy server components
+# (apscheduler) even during plain completions, producing noisy ERROR logs.
+# Suppress at CRITICAL so only genuine fatal errors surface.
+logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
+
 from hammy.config import EnrichmentConfig
 from hammy.schema.models import Node, NodeType
+
+
+_PROVIDER_ENV_VARS: dict[str, str] = {
+    "openrouter": "OPENROUTER_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "azure": "AZURE_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+
+# Explicit API base URLs for providers where LiteLLM's model-name detection
+# can override the intended endpoint (e.g. gpt-* models routed to OpenAI).
+_PROVIDER_API_BASES: dict[str, str] = {
+    "openrouter": "https://openrouter.ai/api/v1",
+}
+
+
+def _resolve_api_key(provider: str) -> str | None:
+    """Look up the API key for a provider from environment variables."""
+    env_var = _PROVIDER_ENV_VARS.get(provider.lower())
+    if env_var:
+        return os.environ.get(env_var)
+    return os.environ.get(f"{provider.upper()}_API_KEY")
 
 
 # Node types worth summarizing — endpoints are just URL strings,
@@ -113,29 +147,35 @@ def _parse_summaries(text: str, expected: int) -> list[str | None]:
     return [None] * expected
 
 
-def _summarize_batch_anthropic(
+def _summarize_batch_litellm(
     items: list[tuple[Node, str]],
     model: str,
+    api_key: str | None = None,
+    api_base: str | None = None,
 ) -> list[str | None]:
-    """Call the Anthropic API to summarize a batch of symbols."""
-    try:
-        import anthropic
-    except ImportError:
-        raise RuntimeError(
-            "anthropic package not installed. Run: uv add anthropic"
-        )
+    """Call an LLM via LiteLLM to summarize a batch of symbols.
 
-    client = anthropic.Anthropic()
+    model should be a LiteLLM model string such as
+    "anthropic/claude-haiku-4-5-20251001", "openai/gpt-4o", or
+    "openrouter/gpt-4o".  The provider and model fields from EnrichmentConfig
+    are joined as "{provider}/{model}" before this function is called.
+
+    api_key and api_base are passed explicitly to prevent LiteLLM's model-name
+    detection from overriding the intended provider (e.g. gpt-* via OpenRouter).
+    """
     prompt = _build_prompt(items)
-
-    message = client.messages.create(
+    response = litellm.completion(
         model=model,
         max_tokens=512,
-        system=_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
+        api_key=api_key,
+        api_base=api_base,
+        messages=[
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
     )
-
-    return _parse_summaries(message.content[0].text, len(items))
+    text = response.choices[0].message.content or ""
+    return _parse_summaries(text, len(items))
 
 
 def enrich_nodes(
@@ -160,6 +200,8 @@ def enrich_nodes(
     Returns:
         Tuple of (number enriched, list of error strings).
     """
+    load_dotenv(project_root / ".env", override=False)
+
     # Select candidates
     candidates = [
         n for n in nodes
@@ -187,24 +229,39 @@ def enrich_nodes(
     enriched = 0
     total = len(enrichable)
 
-    if config.provider != "anthropic":
-        errors.append(f"Unsupported provider '{config.provider}'. Only 'anthropic' is supported.")
-        return 0, errors
+    # Build the LiteLLM model string: "provider/model"
+    litellm_model = f"{config.provider}/{config.model}"
+    api_key = _resolve_api_key(config.provider)
+    api_base = _PROVIDER_API_BASES.get(config.provider.lower())
 
     for batch_start in range(0, total, config.batch_size):
         batch = enrichable[batch_start : batch_start + config.batch_size]
         try:
-            summaries = _summarize_batch_anthropic(batch, config.model)
+            summaries = _summarize_batch_litellm(batch, litellm_model, api_key, api_base)
         except Exception as e:
             errors.append(f"Batch {batch_start // config.batch_size + 1}: {e}")
             if progress_callback:
                 progress_callback(batch_start + len(batch), total)
             continue
 
-        for (node, _), summary in zip(batch, summaries):
-            if summary:
-                node.summary = summary
-                enriched += 1
+        # If the model returned None for every item (parse failure), fall back to
+        # single-item calls so a bad batch doesn't silently drop all its symbols.
+        if all(s is None for s in summaries) and len(batch) > 1:
+            for item in batch:
+                try:
+                    single = _summarize_batch_litellm([item], litellm_model, api_key, api_base)
+                    summaries_one = single
+                except Exception:
+                    summaries_one = [None]
+                node, _ = item
+                if summaries_one[0]:
+                    node.summary = summaries_one[0]
+                    enriched += 1
+        else:
+            for (node, _), summary in zip(batch, summaries):
+                if summary:
+                    node.summary = summary
+                    enriched += 1
 
         if progress_callback:
             progress_callback(batch_start + len(batch), total)

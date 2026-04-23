@@ -35,6 +35,8 @@ dependencies = [
     "tree-sitter-go>=0.25.0",
     "python-dotenv>=1.1.1",
     "watchfiles>=1.1.1",
+    # LLM enrichment
+    "litellm>=1.0.0",
     # Visualizer
     "fastapi>=0.100.0",
     "uvicorn>=0.20.0",

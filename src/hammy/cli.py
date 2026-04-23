@@ -193,11 +193,15 @@ def index(
             for err in enrich_errors[:5]:
                 console.print(f"  - {err}")
 
-        # Re-upsert enriched nodes so embeddings reflect new summaries
+        # Re-upsert only the enriched nodes so embeddings reflect new summaries
         if qdrant is not None and enriched_count > 0:
-            with console.status("[bold blue]Re-indexing enriched symbols..."):
-                qdrant.upsert_nodes(nodes)
-            console.print("[green]Qdrant updated with enriched embeddings.[/green]")
+            enriched_nodes = [n for n in nodes if n.summary]
+            with console.status(f"[bold blue]Re-indexing {len(enriched_nodes)} enriched symbols in Qdrant..."):
+                try:
+                    upserted = qdrant.upsert_nodes(enriched_nodes)
+                    console.print(f"[green]Qdrant updated — {upserted} symbols re-embedded with summaries.[/green]")
+                except Exception as e:
+                    console.print(f"[red]Qdrant update failed:[/red] {e}")
 
     # Index commits
     if not no_commits:

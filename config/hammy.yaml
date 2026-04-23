@@ -27,8 +27,8 @@ vcs:
 
 enrichment:
   enabled: false          # Set true to auto-generate LLM summaries during indexing
-  provider: "anthropic"   # LiteLLM provider string (anthropic, openai, etc.)
-  model: "claude-haiku-4-5-20251001"  # Model to use for summaries
+  provider: "openrouter"  # LiteLLM provider string (anthropic, openai, etc.)
+  model: "gpt-5.4-nano"   # Model to use for summaries
   batch_size: 10          # Symbols enriched per API call
   skip_if_summary: true   # Don't re-enrich symbols that already have summaries
   max_symbols: 0          # Cap on symbols to enrich per run (0 = no limit)
